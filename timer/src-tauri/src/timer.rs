@@ -49,6 +49,8 @@ pub struct TimerRuntime {
     pub last_update: Option<String>,
 }
 
+type TimerCallback = Arc<Mutex<Option<Box<dyn Fn(TimerRuntime) + Send + 'static>>>>;
+
 impl Default for TimerRuntime {
     fn default() -> Self {
         let total = 30 * 60; // 默认30分钟
@@ -65,7 +67,7 @@ impl Default for TimerRuntime {
 pub struct TimerEngine {
     runtime: Arc<Mutex<TimerRuntime>>,
     config: Arc<Mutex<TimerConfig>>,
-    callback: Arc<Mutex<Option<Box<dyn Fn(TimerRuntime) + Send + 'static>>>>,
+    callback: TimerCallback,
 }
 
 impl TimerEngine {
@@ -81,6 +83,50 @@ impl TimerEngine {
             })),
             config: Arc::new(Mutex::new(config)),
             callback: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// 从保存的运行时状态恢复定时器
+    pub fn from_runtime_state(saved_state: &crate::config::RuntimeState) -> Self {
+        let config = TimerConfig {
+            interval_minutes: saved_state.total_seconds / 60,
+            custom_interval: true,
+            min_interval: 1,
+            max_interval: 1440,
+        };
+
+        // 解析状态
+        let state = match saved_state.timer_status.as_str() {
+            "Running" => TimerState::Running,
+            "Paused" => TimerState::Paused,
+            _ => TimerState::Idle,
+        };
+
+        Self {
+            runtime: Arc::new(Mutex::new(TimerRuntime {
+                state,
+                remaining_seconds: saved_state.remaining_seconds,
+                total_seconds: saved_state.total_seconds,
+                last_update: Some(saved_state.last_update.clone()),
+            })),
+            config: Arc::new(Mutex::new(config)),
+            callback: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// 获取当前的运行时状态（用于保存）
+    pub fn to_runtime_state(&self) -> crate::config::RuntimeState {
+        let rt = self.runtime.lock().unwrap();
+        crate::config::RuntimeState {
+            timer_status: match rt.state {
+                TimerState::Idle => "Idle".to_string(),
+                TimerState::Running => "Running".to_string(),
+                TimerState::Paused => "Paused".to_string(),
+            },
+            remaining_seconds: rt.remaining_seconds,
+            total_seconds: rt.total_seconds,
+            last_update: rt.last_update.clone().unwrap_or_else(|| chrono::Local::now().to_rfc3339()),
+            delay_count: 0,
         }
     }
 
@@ -190,6 +236,20 @@ impl TimerEngine {
         runtime.last_update = Some(chrono::Local::now().to_rfc3339());
     }
 
+    /// 延后执行（追加分钟）
+    pub fn add_delay(&self, minutes: u64) -> Result<(), String> {
+        let mut runtime = self.runtime.lock().unwrap();
+        if runtime.state != TimerState::Running && runtime.state != TimerState::Paused {
+            return Err("计时器未在运行".to_string());
+        }
+
+        let add_seconds = minutes * 60;
+        runtime.remaining_seconds = runtime.remaining_seconds.saturating_add(add_seconds);
+        runtime.total_seconds = runtime.total_seconds.saturating_add(add_seconds);
+        runtime.last_update = Some(chrono::Local::now().to_rfc3339());
+        Ok(())
+    }
+
     /// 启动后台计时线程
     fn spawn_timer_thread(&self) {
         let runtime = Arc::clone(&self.runtime);
@@ -222,6 +282,12 @@ impl TimerEngine {
                         // 检查是否倒计时结束
                         let is_finished = rt.remaining_seconds == 0;
 
+                        // 如果倒计时结束，先设置状态为 Idle，再触发回调
+                        if is_finished {
+                            rt.state = TimerState::Idle;
+                            rt.last_update = Some(chrono::Local::now().to_rfc3339());
+                        }
+
                         // 触发回调
                         let runtime_clone = rt.clone();
                         drop(rt);
@@ -232,11 +298,8 @@ impl TimerEngine {
                             }
                         }
 
-                        // 如果倒计时结束，停止计时器
+                        // 如果倒计时结束，退出线程
                         if is_finished {
-                            let mut rt = runtime.lock().unwrap();
-                            rt.state = TimerState::Idle;
-                            rt.last_update = Some(chrono::Local::now().to_rfc3339());
                             break;
                         }
                     }

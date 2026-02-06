@@ -4,13 +4,24 @@
 
 use std::env;
 use std::process::Command;
+use std::sync::Arc;
+
+use crate::activation;
+use crate::config::ConfigManager;
 
 const REGISTRY_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 const APP_NAME: &str = "TimerApp";
 
 /// 检查开机自启是否启用
 #[tauri::command]
-pub fn is_auto_start_enabled() -> Result<bool, String> {
+pub fn is_auto_start_enabled(
+    config_manager: tauri::State<Arc<ConfigManager>>,
+) -> Result<bool, String> {
+    activation::ensure_activated(config_manager.inner())?;
+    is_auto_start_enabled_internal()
+}
+
+fn is_auto_start_enabled_internal() -> Result<bool, String> {
     #[cfg(windows)]
     {
         let output = Command::new("reg.exe")
@@ -29,7 +40,15 @@ pub fn is_auto_start_enabled() -> Result<bool, String> {
 
 /// 设置开机自启
 #[tauri::command]
-pub fn set_auto_start(enabled: bool) -> Result<(), String> {
+pub fn set_auto_start(
+    enabled: bool,
+    config_manager: tauri::State<Arc<ConfigManager>>,
+) -> Result<(), String> {
+    activation::ensure_activated(config_manager.inner())?;
+    set_auto_start_internal(enabled)
+}
+
+fn set_auto_start_internal(enabled: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
         if enabled {
@@ -73,7 +92,12 @@ pub fn set_auto_start(enabled: bool) -> Result<(), String> {
                 Ok(())
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(format!("取消开机自启失败: {}", stderr))
+                // 如果注册表项不存在（错误代码2），也算成功
+                if stderr.contains("无法找到") || stderr.contains("Unable to find") || stderr.contains("ERROR_FILE_NOT_FOUND") {
+                    Ok(())
+                } else {
+                    Err(format!("取消开机自启失败: {}", stderr))
+                }
             }
         }
     }
@@ -91,6 +115,6 @@ mod tests {
     #[test]
     fn test_auto_start() {
         // 仅测试函数不 panic
-        let _ = is_auto_start_enabled();
+        let _ = is_auto_start_enabled_internal();
     }
 }

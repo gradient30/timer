@@ -15,7 +15,12 @@
       "Bash(findstr:*)",
       "Bash(cargo add:*)",
       "Bash(cargo build:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(Get-ChildItem -Recurse -Name)",
+      "Bash(Select-Object -First 100)",
+      "Bash(tasklist:*)",
+      "Bash(cargo run:*)",
+      "Bash(cat:*)"
     ]
   }
 }

@@ -4,6 +4,8 @@
 use timer_lib::single_instance::{activate_existing_window, SingleInstance};
 
 fn main() {
+    let safe_mode = std::env::args().any(|arg| arg == "--safe-mode");
+
     // 单实例检查
     let single_instance = SingleInstance::new();
 
@@ -15,5 +17,5 @@ fn main() {
     }
 
     // 第一个实例，正常启动
-    timer_lib::run()
+    timer_lib::run(safe_mode)
 }

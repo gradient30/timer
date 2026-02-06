@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use crate::activation;
 
 /// 应用配置版本
 const CONFIG_VERSION: &str = "1.1";
@@ -70,21 +71,11 @@ impl Default for ActionConfig {
 }
 
 /// 启动配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StartupConfig {
     pub auto_start: bool,
     pub start_minimized: bool,
     pub start_timer_automatically: bool,
-}
-
-impl Default for StartupConfig {
-    fn default() -> Self {
-        Self {
-            auto_start: false,
-            start_minimized: false,
-            start_timer_automatically: false,
-        }
-    }
 }
 
 /// 日志配置
@@ -105,6 +96,24 @@ impl Default for LogConfig {
             max_total_size_mb: 100,
         }
     }
+}
+
+/// 激活配置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ActivationConfig {
+    pub activated: bool,
+    pub activation_code_hash: Option<String>,
+    pub activated_at: Option<String>,
+}
+
+/// 安全配置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SecurityConfig {
+    pub password_hash: Option<String>,
+    pub security_question: Option<String>,
+    pub security_answer_hash: Option<String>,
+    pub failed_attempts: u32,
+    pub lock_until: Option<String>,
 }
 
 /// 运行时状态持久化
@@ -138,6 +147,10 @@ pub struct AppConfig {
     pub action: ActionConfig,
     pub startup: StartupConfig,
     pub log: LogConfig,
+    #[serde(default)]
+    pub activation: ActivationConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
     pub runtime_state: RuntimeState,
 }
 
@@ -150,6 +163,8 @@ impl Default for AppConfig {
             action: ActionConfig::default(),
             startup: StartupConfig::default(),
             log: LogConfig::default(),
+            activation: ActivationConfig::default(),
+            security: SecurityConfig::default(),
             runtime_state: RuntimeState::default(),
         }
     }
@@ -260,6 +275,7 @@ pub fn update_timer_config(
     state: tauri::State<std::sync::Arc<ConfigManager>>,
     config: TimerConfig,
 ) -> Result<(), String> {
+    activation::ensure_activated(state.inner())?;
     state.update(|c| c.timer = config)
 }
 
@@ -269,6 +285,7 @@ pub fn update_schedule_config(
     state: tauri::State<std::sync::Arc<ConfigManager>>,
     config: ScheduleConfig,
 ) -> Result<(), String> {
+    activation::ensure_activated(state.inner())?;
     state.update(|c| c.schedule = config)
 }
 
@@ -278,6 +295,7 @@ pub fn update_action_config(
     state: tauri::State<std::sync::Arc<ConfigManager>>,
     config: ActionConfig,
 ) -> Result<(), String> {
+    activation::ensure_activated(state.inner())?;
     state.update(|c| c.action = config)
 }
 
@@ -287,7 +305,16 @@ pub fn update_startup_config(
     state: tauri::State<std::sync::Arc<ConfigManager>>,
     config: StartupConfig,
 ) -> Result<(), String> {
+    activation::ensure_activated(state.inner())?;
     state.update(|c| c.startup = config)
+}
+
+/// 更新运行时状态（内部使用，用于状态持久化）
+pub fn update_runtime_state(
+    state: &tauri::State<std::sync::Arc<ConfigManager>>,
+    runtime_state: RuntimeState,
+) -> Result<(), String> {
+    state.update(|c| c.runtime_state = runtime_state)
 }
 
 #[cfg(test)]
@@ -301,6 +328,8 @@ mod tests {
         assert_eq!(config.timer.interval_minutes, 30);
         assert_eq!(config.timer.max_delay_times, 3);
         assert_eq!(config.action.action_type, "lock");
+        assert!(config.security.password_hash.is_none());
+        assert!(!config.activation.activated);
     }
 
     #[test]
@@ -309,5 +338,7 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("interval_minutes"));
         assert!(json.contains("schedule"));
+        assert!(json.contains("security"));
+        assert!(json.contains("activation"));
     }
 }

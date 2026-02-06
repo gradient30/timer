@@ -54,8 +54,276 @@
       <!-- 状态栏 -->
       <footer class="status-bar">
         <span id="status-text">就绪</span>
-        <span class="hint">关闭窗口最小化到托盘</span>
+        <span id="tray-hint" class="hint">关闭窗口最小化到托盘</span>
       </footer>
+
+      <!-- 右上角操作区 -->
+      <div class="header-actions">
+        <button id="btn-help" class="btn-icon btn-help" title="帮助">?</button>
+        <button id="btn-settings" class="btn-icon btn-settings" title="设置">⚙️</button>
+      </div>
+    </div>
+
+    <!-- 配置面板 -->
+    <div id="settings-panel" class="settings-panel hidden">
+      <div class="settings-header">
+        <h2>设置</h2>
+        <button id="btn-close-settings" class="btn-close">✕</button>
+      </div>
+
+      <div class="settings-content">
+        <!-- 执行动作 -->
+        <section class="setting-section">
+          <h3>执行动作</h3>
+          <div class="action-options">
+            <label class="radio-label">
+              <input type="radio" name="action" value="lock" checked />
+              <span>🔒 锁屏</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="action" value="suspend" />
+              <span>💤 休眠</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="action" value="shutdown" />
+              <span>⏻ 关机</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- 生效规则 -->
+        <section class="setting-section">
+          <h3>生效规则</h3>
+          <label class="checkbox-label">
+            <input type="checkbox" id="time-limit-enabled" />
+            <span>启用时间段限制</span>
+          </label>
+          <div class="time-range" id="time-range-container">
+            <input type="time" id="start-time" value="09:00" />
+            <span>至</span>
+            <input type="time" id="end-time" value="18:00" />
+          </div>
+
+          <label class="checkbox-label">
+            <input type="checkbox" id="weekday-limit-enabled" />
+            <span>启用星期限制</span>
+          </label>
+          <div class="weekdays" id="weekdays-container">
+            <label><input type="checkbox" value="1" checked /> 周一</label>
+            <label><input type="checkbox" value="2" checked /> 周二</label>
+            <label><input type="checkbox" value="3" checked /> 周三</label>
+            <label><input type="checkbox" value="4" checked /> 周四</label>
+            <label><input type="checkbox" value="5" checked /> 周五</label>
+            <label><input type="checkbox" value="6" /> 周六</label>
+            <label><input type="checkbox" value="7" /> 周日</label>
+          </div>
+        </section>
+
+        <!-- 提示设置 -->
+        <section class="setting-section">
+          <h3>提示设置</h3>
+          <div class="notice-options">
+            <label>
+              提前通知时间:
+              <select id="advance-notice">
+                <option value="0">不通知</option>
+                <option value="10">10秒</option>
+                <option value="30" selected>30秒</option>
+                <option value="60">1分钟</option>
+                <option value="300">5分钟</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <!-- 启动设置 -->
+        <section class="setting-section">
+          <h3>启动设置</h3>
+          <label class="checkbox-label">
+            <input type="checkbox" id="auto-start" />
+            <span>开机自动启动</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="start-minimized" />
+            <span>启动时最小化到托盘</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="start-timer-auto" />
+            <span>启动后自动开始计时</span>
+          </label>
+        </section>
+
+        <!-- 日志 -->
+        <section class="setting-section">
+          <h3>日志</h3>
+          <div class="log-actions">
+            <button id="btn-open-log-dir" class="btn btn-small">打开日志目录</button>
+            <button id="btn-test-lock" class="btn btn-small btn-test">测试锁屏</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="settings-footer">
+        <button id="btn-save-settings" class="btn btn-primary">保存设置</button>
+      </div>
+    </div>
+
+    <!-- 使用说明 -->
+    <div id="help-modal" class="help-modal hidden">
+      <div class="help-card">
+        <div class="help-header">
+          <h3>使用说明</h3>
+          <button id="btn-close-help" class="btn-close">✕</button>
+        </div>
+        <ul class="help-list">
+          <li>选择快速/自定义时间后点击“开始”，可随时暂停或重置。</li>
+          <li>右上角“设置”中可配置执行动作、生效规则与提前通知。</li>
+          <li>到达提醒时会弹窗，可延后或取消；倒计时结束将自动执行。</li>
+          <li>关闭主窗口会最小化到托盘，托盘菜单可控制计时。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div id="activation-modal" class="auth-modal hidden">
+      <div class="auth-card">
+        <div class="auth-header">
+          <h3>激活应用</h3>
+        </div>
+        <p class="auth-desc">请输入激活码后才能使用全部功能。</p>
+        <div class="auth-field">
+          <label>激活码</label>
+          <input type="text" id="activation-code" placeholder="XXXX-XXXX-XXXX-XXXX" />
+        </div>
+        <p id="activation-error" class="auth-error"></p>
+        <div class="auth-actions">
+          <button id="btn-activate" class="btn btn-primary">激活</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="activation-gen-modal" class="auth-modal hidden">
+      <div class="auth-card">
+        <div class="auth-header">
+          <h3>生成激活码</h3>
+          <button id="btn-close-activation-gen" class="btn-close">✕</button>
+        </div>
+        <p class="auth-desc">输入管理员口令后生成 5 个激活码。</p>
+        <div class="auth-field">
+          <label>管理员口令</label>
+          <input type="password" id="activation-gen-password" placeholder="请输入口令" />
+        </div>
+        <p id="activation-gen-error" class="auth-error"></p>
+        <div class="auth-field">
+          <label>生成结果</label>
+          <textarea id="activation-gen-result" rows="5" readonly></textarea>
+        </div>
+        <div class="auth-actions">
+          <button id="btn-generate-activation" class="btn btn-primary">生成</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="password-setup-modal" class="auth-modal hidden">
+      <div class="auth-card">
+        <div class="auth-header">
+          <h3>设置退出密码</h3>
+          <button id="btn-close-setup" class="btn-close">✕</button>
+        </div>
+        <p class="auth-desc">首次使用请设置退出密码与密保问题。</p>
+        <div class="auth-field">
+          <label>退出密码</label>
+          <input type="password" id="setup-password" placeholder="至少4位" />
+        </div>
+        <div class="auth-field">
+          <label>确认密码</label>
+          <input type="password" id="setup-password-confirm" placeholder="再次输入" />
+        </div>
+        <div class="auth-field">
+          <label>密保问题</label>
+          <select id="setup-question">
+            <option value="">请选择</option>
+            <option value="你的第一所学校名称？">你的第一所学校名称？</option>
+            <option value="你最喜欢的城市是？">你最喜欢的城市是？</option>
+            <option value="你常用的昵称是？">你常用的昵称是？</option>
+          </select>
+        </div>
+        <div class="auth-field">
+          <label>密保答案</label>
+          <input type="text" id="setup-answer" placeholder="用于重置密码" />
+        </div>
+        <p id="setup-error" class="auth-error"></p>
+        <div class="auth-actions">
+          <button id="btn-save-password" class="btn btn-primary">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="exit-password-modal" class="auth-modal hidden">
+      <div class="auth-card">
+        <div class="auth-header">
+          <h3>退出验证</h3>
+          <button id="btn-close-exit" class="btn-close">✕</button>
+        </div>
+        <p class="auth-desc">退出应用需要验证密码。</p>
+        <div class="auth-field">
+          <label>退出密码</label>
+          <input type="password" id="exit-password" placeholder="请输入密码" />
+        </div>
+        <p id="exit-lock-info" class="auth-info"></p>
+        <p id="exit-error" class="auth-error"></p>
+        <div class="auth-actions">
+          <button id="btn-exit-confirm" class="btn btn-danger">退出</button>
+          <button id="btn-exit-cancel" class="btn btn-secondary">取消</button>
+        </div>
+        <button id="btn-forgot-password" class="auth-link">忘记密码？</button>
+      </div>
+    </div>
+
+    <div id="reset-password-modal" class="auth-modal hidden">
+      <div class="auth-card">
+        <div class="auth-header">
+          <h3>重置密码</h3>
+          <button id="btn-close-reset" class="btn-close">✕</button>
+        </div>
+        <p class="auth-desc">回答密保问题后可重置退出密码。</p>
+        <div class="auth-field">
+          <label>密保问题</label>
+          <div id="reset-question" class="auth-question"></div>
+        </div>
+        <div class="auth-field">
+          <label>密保答案</label>
+          <input type="text" id="reset-answer" placeholder="请输入答案" />
+        </div>
+        <div class="auth-field">
+          <label>新密码</label>
+          <input type="password" id="reset-password" placeholder="至少4位" />
+        </div>
+        <div class="auth-field">
+          <label>确认新密码</label>
+          <input type="password" id="reset-password-confirm" placeholder="再次输入" />
+        </div>
+        <p id="reset-error" class="auth-error"></p>
+        <div class="auth-actions">
+          <button id="btn-reset-password" class="btn btn-primary">重置</button>
+          <button id="btn-reset-cancel" class="btn btn-secondary">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 提示弹窗 -->
+    <div id="notice-modal" class="notice-modal hidden">
+      <div class="notice-card">
+        <h3 id="notice-title">即将锁屏</h3>
+        <p id="notice-message">系统将在 30 秒后自动锁屏</p>
+        <div class="notice-countdown">
+          <span id="notice-countdown">30</span> 秒后自动执行
+        </div>
+        <div id="notice-delay-options" class="notice-delays"></div>
+        <div class="notice-actions">
+          <button id="btn-notice-execute" class="btn btn-danger">立即执行</button>
+          <button id="btn-notice-cancel" class="btn btn-secondary">取消</button>
+        </div>
+      </div>
     </div>
   </body>
 </html>

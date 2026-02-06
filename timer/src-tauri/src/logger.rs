@@ -1,9 +1,15 @@
 //! 日志模块 - E7: 日志记录
 //! 操作日志、错误日志记录
 
+#![allow(dead_code)]
+
 use std::fs;
 use std::path::PathBuf;
 use tracing::{info, error, debug, warn};
+use std::sync::Arc;
+
+use crate::activation;
+use crate::config::ConfigManager;
 
 /// 初始化日志系统
 ///
@@ -26,7 +32,7 @@ pub fn init_logger(level: &str) -> Result<(), String> {
     };
 
     // 初始化 tracing-subscriber
-    let subscriber = tracing_subscriber::fmt()
+    tracing_subscriber::fmt()
         .with_max_level(log_level)
         .with_target(false)
         .with_thread_ids(false)
@@ -129,9 +135,11 @@ pub fn log_warn(category: &str, message: &str) {
 
 /// Tauri命令：获取日志目录
 #[tauri::command]
-pub fn get_log_directory() -> Result<String, String> {
-    get_log_dir()
-        .map(|p| p.to_string_lossy().to_string())
+pub fn get_log_directory(
+    config_manager: tauri::State<Arc<ConfigManager>>,
+) -> Result<String, String> {
+    activation::ensure_activated(config_manager.inner())?;
+    get_log_dir().map(|p| p.to_string_lossy().to_string())
 }
 
 #[cfg(test)]

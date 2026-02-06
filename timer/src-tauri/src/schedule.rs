@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn test_weekday_check() {
         // 无法直接测试当前时间，但验证逻辑
-        let allowed = vec![1, 2, 3, 4, 5]; // 工作日
+        let _allowed = vec![1, 2, 3, 4, 5]; // 工作日
         // 假设今天是周一，则应在允许列表
         // 实际测试依赖于当前系统时间
     }

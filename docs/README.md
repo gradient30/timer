@@ -27,11 +27,20 @@ docs/
 │   ├── e5-config-persistence.md  # E5 配置持久化
 │   ├── e6-auto-startup.md        # E6 开机自启
 │   └── e7-logging.md             # E7 日志记录
-├── phase1-review-report.md    # 阶段一联合审核报告
-└── scripts/                   # 项目管理脚本
-    ├── manage.ps1
-    ├── manage.bat
-    └── README.md
+├── phase3/                    # 阶段三 - 安全与完善 ✅
+│   ├── README.md              # 阶段三索引
+│   ├── ACCEPTANCE.md          # 验收报告
+│   ├── s1-password-setup.md   # S1 密码设置
+│   ├── s2-exit-verification.md# S2 退出验证
+│   ├── s3-password-reset.md   # S3 密保重置
+│   ├── s4-safe-mode.md        # S4 安全模式
+│   ├── s5-ui-polish.md        # S5 UI优化
+│   └── s6-msi-bundling.md     # S6 MSI 打包
+├── activation/                # 激活码体系（离线已完成，线上计划）
+│   ├── REQUIREMENTS.md        # 需求说明
+│   ├── PLAN.md                # 实施计划
+│   └── USAGE.md               # 使用方法
+└── phase1-review-report.md    # 阶段一联合审核报告
 ```
 
 ---
@@ -42,8 +51,14 @@ docs/
 |------|------|------|
 | [阶段一：MVP核心功能](./phase1/) | ✅ 已完成 | 托盘/定时器/UI/锁屏 |
 | [阶段二：进阶功能](./phase2/) | ✅ 已完成 | 生效规则/执行动作/配置持久化/日志 |
-| 阶段三：安全与完善 | ⬜ 待开始 | 密码保护/MSI安装包 |
+| [阶段三：安全与完善](./phase3/) | ✅ 已完成 | 密码保护/安全模式/MSI安装包 |
 | 阶段四：测试与交付 | ⬜ 待开始 | 集成测试/正式发布 |
+
+## 激活码体系
+
+- [需求说明](./activation/REQUIREMENTS.md)
+- [实施计划](./activation/PLAN.md)
+- [使用方法](./activation/USAGE.md)
 
 ---
 
@@ -68,5 +83,6 @@ docs/
 |------|------|
 | 查看阶段一交付物 | [./phase1/README.md](./phase1/README.md) |
 | 查看阶段二交付物 | [./phase2/README.md](./phase2/README.md) |
+| 查看阶段三交付物 | [./phase3/README.md](./phase3/README.md) |
 | 查看阶段一审核结论 | [./phase1-review-report.md](./phase1-review-report.md) |
-| 项目管理脚本 | [./scripts/README.md](./scripts/README.md) |
+| 激活码体系文档 | [./activation/REQUIREMENTS.md](./activation/REQUIREMENTS.md) |

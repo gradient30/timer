@@ -1,8 +1,37 @@
 //! 通知模块 - E4: 提示优化
 //! 差异化提示策略：锁屏=弹窗，休眠/关机=托盘通知
 
-use tauri::{AppHandle, Emitter};
+#![allow(dead_code)]
+
+use tauri::{AppHandle, Emitter, Manager};
 use serde::Serialize;
+use std::sync::{Arc, Mutex};
+
+use crate::{
+    activation,
+    AppState,
+    config::{self, ConfigManager, RuntimeState},
+    system,
+    timer::{TimerRuntime, TimerState},
+};
+
+fn format_remaining(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    let secs = seconds % 60;
+    format!("{:02}:{:02}", minutes, secs)
+}
+
+fn update_tray_tooltip(app_handle: &AppHandle, runtime: &TimerRuntime) {
+    let tooltip = match runtime.state {
+        TimerState::Running => format!("TimerApp - {}", format_remaining(runtime.remaining_seconds)),
+        TimerState::Paused => format!("TimerApp - 暂停 {}", format_remaining(runtime.remaining_seconds)),
+        TimerState::Idle => "TimerApp - 停止".to_string(),
+    };
+
+    if let Some(tray) = app_handle.tray_by_id("main-tray") {
+        let _ = tray.set_tooltip(Some(tooltip.as_str()));
+    }
+}
 
 /// 通知类型
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +116,14 @@ impl Notifier {
             delay_options,
         };
 
+        if matches!(notification.notification_type, NotificationType::Modal) {
+            if let Some(window) = app_handle.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+                let _ = window.set_always_on_top(true);
+            }
+        }
+
         // 发送通知事件
         if let Err(e) = app_handle.emit("timer-notify", notification) {
             eprintln!("发送通知失败: {}", e);
@@ -130,27 +167,104 @@ impl Notifier {
 /// Tauri命令：用户选择延后执行
 #[tauri::command]
 pub fn delay_execution(
+    state: tauri::State<Mutex<AppState>>,
+    config_manager: tauri::State<Arc<ConfigManager>>,
     app_handle: AppHandle,
     minutes: u64,
     delay_count: u32,
     max_delay_times: u32,
 ) -> Result<bool, String> {
-    if delay_count >= max_delay_times {
+    activation::ensure_activated(config_manager.inner())?;
+    let config = config_manager.get()?;
+    let current_delay_count = config.runtime_state.delay_count;
+    let max_allowed = config.timer.max_delay_times;
+
+    if current_delay_count >= max_allowed || delay_count >= max_delay_times {
         return Ok(false); // 不能再延后
     }
 
-    Notifier::notify_delayed(&app_handle, minutes, delay_count + 1, max_delay_times);
+    if minutes == 0 {
+        return Ok(true);
+    }
+
+    let app_state = state.lock().map_err(|e| e.to_string())?;
+    app_state.timer.add_delay(minutes)?;
+    let runtime = app_state.timer.get_runtime();
+    let runtime_state = RuntimeState {
+        timer_status: match runtime.state {
+            TimerState::Idle => "Idle".to_string(),
+            TimerState::Running => "Running".to_string(),
+            TimerState::Paused => "Paused".to_string(),
+        },
+        remaining_seconds: runtime.remaining_seconds,
+        total_seconds: runtime.total_seconds,
+        last_update: runtime.last_update.clone().unwrap_or_else(|| chrono::Local::now().to_rfc3339()),
+        delay_count: current_delay_count + 1,
+    };
+    drop(app_state);
+    config::update_runtime_state(&config_manager, runtime_state)?;
+
+    let _ = app_handle.emit("timer-update", &runtime);
+    update_tray_tooltip(&app_handle, &runtime);
+
+    Notifier::notify_delayed(&app_handle, minutes, current_delay_count + 1, max_allowed);
     Ok(true)
 }
 
 /// Tauri命令：用户选择立即执行
 #[tauri::command]
-pub fn confirm_execution(app_handle: AppHandle) {
-    let _ = app_handle.emit("timer-confirm-execute", ());
+pub fn confirm_execution(
+    state: tauri::State<Mutex<AppState>>,
+    config_manager: tauri::State<Arc<ConfigManager>>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    activation::ensure_activated(config_manager.inner())?;
+    let config = config_manager.get()?;
+    system::execute_action(&config.action.action_type);
+
+    let app_state = state.lock().map_err(|e| e.to_string())?;
+    app_state.timer.stop();
+    let runtime = app_state.timer.get_runtime();
+    drop(app_state);
+
+    let runtime_state = RuntimeState {
+        timer_status: "Idle".to_string(),
+        remaining_seconds: runtime.total_seconds,
+        total_seconds: runtime.total_seconds,
+        last_update: chrono::Local::now().to_rfc3339(),
+        delay_count: 0,
+    };
+    config::update_runtime_state(&config_manager, runtime_state)?;
+
+    let _ = app_handle.emit("timer-update", &runtime);
+    update_tray_tooltip(&app_handle, &runtime);
+    Ok(())
 }
 
 /// Tauri命令：用户选择取消
 #[tauri::command]
-pub fn cancel_execution(app_handle: AppHandle) {
+pub fn cancel_execution(
+    state: tauri::State<Mutex<AppState>>,
+    config_manager: tauri::State<Arc<ConfigManager>>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    activation::ensure_activated(config_manager.inner())?;
+    let app_state = state.lock().map_err(|e| e.to_string())?;
+    app_state.timer.stop();
+    let runtime = app_state.timer.get_runtime();
+    drop(app_state);
+
+    let runtime_state = RuntimeState {
+        timer_status: "Idle".to_string(),
+        remaining_seconds: runtime.total_seconds,
+        total_seconds: runtime.total_seconds,
+        last_update: chrono::Local::now().to_rfc3339(),
+        delay_count: 0,
+    };
+    config::update_runtime_state(&config_manager, runtime_state)?;
+
+    let _ = app_handle.emit("timer-update", &runtime);
+    update_tray_tooltip(&app_handle, &runtime);
     Notifier::notify_cancelled(&app_handle);
+    Ok(())
 }
