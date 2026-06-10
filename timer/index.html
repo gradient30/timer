@@ -1,29 +1,103 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Share+Tech+Mono&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/styles.css" />
     <title>TimerApp - Windows定时器</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
   <body>
     <div class="app">
-      <!-- 标题栏 -->
+      <div class="hud-grid" aria-hidden="true"></div>
+      <div class="hud-scanline" aria-hidden="true"></div>
+
       <header class="header">
-        <h1>TimerApp</h1>
-        <span class="version">v0.1.0</span>
+        <div class="brand-block">
+          <h1><span class="brand-glyph">◈</span>TIMER<span class="brand-accent">SYS</span></h1>
+          <span class="version">BUILD 0.1.0</span>
+        </div>
       </header>
 
-      <!-- 主计时器显示 -->
       <main class="timer-display">
-        <div class="timer-circle">
-          <div class="timer-text" id="timer-display">30:00</div>
-          <div class="timer-label" id="timer-status">准备就绪</div>
+        <div class="timer-hud">
+          <div class="timer-ring" aria-hidden="true"></div>
+          <div class="timer-circle">
+            <div class="timer-text" id="timer-display">30:00</div>
+            <div class="timer-label" id="timer-status">准备就绪</div>
+          </div>
         </div>
-        <div class="progress-bar">
-          <div class="progress-fill" id="progress-fill" style="width: 100%"></div>
+        <div class="progress-track">
+          <div class="progress-bar-wrap">
+            <div id="progress-runner" class="progress-runner" aria-hidden="true">
+              <svg class="cyclist-icon" viewBox="0 0 58 34" width="38" height="24" aria-hidden="true">
+                <g class="cyclist-figure">
+                  <g class="bike-wheel bike-wheel-rear">
+                    <circle class="wheel-rim" cx="46" cy="26" r="6.5" />
+                    <g transform="translate(46 26)">
+                      <g class="wheel-spokes">
+                        <line class="bike-stroke" x1="0" y1="-6.5" x2="0" y2="6.5" />
+                        <line class="bike-stroke" x1="-6.5" y1="0" x2="6.5" y2="0" />
+                        <line class="bike-stroke" x1="-4.6" y1="-4.6" x2="4.6" y2="4.6" />
+                        <line class="bike-stroke" x1="-4.6" y1="4.6" x2="4.6" y2="-4.6" />
+                      </g>
+                    </g>
+                    <circle class="wheel-hub" cx="46" cy="26" r="1.3" />
+                  </g>
+                  <g class="bike-wheel bike-wheel-front">
+                    <circle class="wheel-rim" cx="12" cy="26" r="6.5" />
+                    <g transform="translate(12 26)">
+                      <g class="wheel-spokes">
+                        <line class="bike-stroke" x1="0" y1="-6.5" x2="0" y2="6.5" />
+                        <line class="bike-stroke" x1="-6.5" y1="0" x2="6.5" y2="0" />
+                        <line class="bike-stroke" x1="-4.6" y1="-4.6" x2="4.6" y2="4.6" />
+                        <line class="bike-stroke" x1="-4.6" y1="4.6" x2="4.6" y2="-4.6" />
+                      </g>
+                    </g>
+                    <circle class="wheel-hub" cx="12" cy="26" r="1.3" />
+                  </g>
+                  <line class="bike-frame" x1="46" y1="26" x2="30" y2="26" />
+                  <line class="bike-frame" x1="30" y1="26" x2="12" y2="26" />
+                  <line class="bike-frame" x1="30" y1="26" x2="37" y2="16" />
+                  <line class="bike-frame" x1="37" y1="16" x2="40" y2="26" />
+                  <line class="bike-frame" x1="37" y1="16" x2="23" y2="12" />
+                  <line class="bike-frame" x1="12" y1="26" x2="18" y2="12" />
+                  <line class="bike-frame bike-handlebar" x1="18" y1="12" x2="14" y2="10" />
+                  <line class="bike-frame bike-handlebar" x1="18" y1="12" x2="22" y2="10" />
+                  <line class="bike-frame bike-seat" x1="35" y1="16" x2="39" y2="16" />
+                  <g transform="translate(30 26)">
+                    <g class="bike-crank">
+                      <line class="bike-stroke" x1="0" y1="0" x2="-4" y2="-4" />
+                      <line class="bike-stroke" x1="0" y1="0" x2="4" y2="-4" />
+                      <circle class="crank-pedal" cx="-4" cy="-4" r="1.3" />
+                      <circle class="crank-pedal" cx="4" cy="-4" r="1.3" />
+                    </g>
+                  </g>
+                  <g class="rider-body">
+                    <ellipse class="rider-torso" cx="35" cy="14.5" rx="3.2" ry="5" transform="rotate(-18 35 14.5)" />
+                    <circle class="rider-head" cx="32.5" cy="6.5" r="3" />
+                    <line class="rider-limb rider-arm" x1="33" y1="10" x2="20" y2="11" />
+                    <line class="rider-limb rider-arm" x1="20" y1="11" x2="17" y2="10.5" />
+                    <line class="rider-limb rider-leg-upper" x1="36" y1="16" x2="31" y2="21" />
+                    <line class="rider-limb rider-leg-upper" x1="36" y1="16" x2="33" y2="20" />
+                    <line class="rider-limb rider-leg-lower" x1="31" y1="21" x2="26" y2="22" />
+                    <line class="rider-limb rider-leg-lower" x1="33" y1="20" x2="34" y2="22" />
+                  </g>
+                </g>
+              </svg>
+            </div>
+            <div class="progress-bar">
+              <div class="progress-fill" id="progress-fill" style="width: 100%"></div>
+            </div>
+          </div>
+          <span class="progress-caption">SYNC</span>
         </div>
       </main>
 
@@ -36,7 +110,7 @@
 
       <!-- 快速设置 -->
       <section class="quick-settings">
-        <span class="label">快速设置:</span>
+        <span class="label">PRESET</span>
         <button class="btn-quick" data-minutes="15">15分钟</button>
         <button class="btn-quick" data-minutes="30">30分钟</button>
         <button class="btn-quick" data-minutes="45">45分钟</button>
@@ -53,15 +127,16 @@
 
       <!-- 状态栏 -->
       <footer class="status-bar">
-        <span id="status-text">就绪</span>
+        <div class="footer-left">
+          <div class="footer-actions">
+            <button id="btn-theme-toggle" class="btn-icon btn-theme" title="切换为明亮风格" aria-label="切换界面风格（深色/明亮/鲜艳）">明</button>
+            <button id="btn-help" class="btn-icon btn-help" title="帮助">?</button>
+            <button id="btn-settings" class="btn-icon btn-settings" title="设置">CFG</button>
+          </div>
+          <span id="status-text">SYS · 就绪</span>
+        </div>
         <span id="tray-hint" class="hint">关闭窗口最小化到托盘</span>
       </footer>
-
-      <!-- 右上角操作区 -->
-      <div class="header-actions">
-        <button id="btn-help" class="btn-icon btn-help" title="帮助">?</button>
-        <button id="btn-settings" class="btn-icon btn-settings" title="设置">⚙️</button>
-      </div>
     </div>
 
     <!-- 配置面板 -->
@@ -78,11 +153,11 @@
           <div class="action-options">
             <label class="radio-label">
               <input type="radio" name="action" value="lock" checked />
-              <span>🔒 锁屏</span>
+              <span>LOCK · 锁屏</span>
             </label>
             <label class="radio-label">
               <input type="radio" name="action" value="shutdown" />
-              <span>⏻ 关机</span>
+              <span>PWR · 关机</span>
             </label>
           </div>
         </section>
@@ -194,7 +269,7 @@
       </div>
     </div>
 
-    <!-- 使用说明 -->
+    <!-- 关于 -->
     <div id="about-modal" class="about-modal hidden">
       <div class="about-card">
         <div class="about-header">
@@ -204,30 +279,21 @@
           </div>
           <button id="btn-close-about" class="btn-close">✕</button>
         </div>
-        <p class="about-tagline">Windows 定时提醒与系统动作工具</p>
         <dl class="about-meta">
           <div class="about-meta-row">
-            <dt>产品说明</dt>
-            <dd>按自定义时间间隔倒计时，在到期前提前通知，并执行锁屏或关机等系统动作；支持托盘后台运行与生效规则配置。</dd>
+            <dt>功能说明</dt>
+            <dd>自定义倒计时，到期前提醒，可执行锁屏或关机；支持循环休息、时间段/星期规则与托盘后台运行。</dd>
           </div>
           <div class="about-meta-row">
-            <dt>主要功能</dt>
-            <dd>定时倒计时、提前通知与延后、锁屏/关机、时间段与星期生效规则、循环休息、开机自启、退出密码保护、操作日志。</dd>
-          </div>
-          <div class="about-meta-row">
-            <dt>适用系统</dt>
+            <dt>运行环境</dt>
             <dd>Windows 10 / Windows 11（64 位）</dd>
           </div>
           <div class="about-meta-row">
-            <dt>运行要求</dt>
-            <dd>关机等功能建议以管理员权限运行；关闭主窗口后程序驻留系统托盘，不会退出。</dd>
-          </div>
-          <div class="about-meta-row">
-            <dt>技术框架</dt>
+            <dt>实现框架</dt>
             <dd>Rust + Tauri 2</dd>
           </div>
         </dl>
-        <p class="about-copyright">© 2026 TimerApp. 保留所有权利。</p>
+        <p class="about-copyright">© 2026 TimerApp</p>
         <div class="about-actions">
           <button id="btn-about-ok" class="btn btn-primary">确定</button>
         </div>
@@ -240,56 +306,37 @@
           <h3>使用说明</h3>
           <button id="btn-close-help" class="btn-close">✕</button>
         </div>
-        <p class="help-intro">以下说明对应当前版本功能，建议首次使用按“快速开始”配置一次。</p>
+        <p class="help-intro">Windows 定时倒计时工具，到期前提醒，并可执行锁屏或关机。</p>
 
         <div class="help-sections">
           <section class="help-section">
-            <h4>快速开始</h4>
-            <ol class="help-list help-list-ordered">
-              <li>在主界面选择 15/30/45/60 分钟，或输入自定义分钟数并点击“设置”。</li>
-              <li>点击“开始”进入计时，点击“暂停”可临时停止，点击“重置”恢复初始状态。</li>
-              <li>点击右上角“设置”选择执行动作（锁屏/关机）并保存。</li>
-            </ol>
-          </section>
-
-          <section class="help-section">
-            <h4>生效规则</h4>
+            <h4>快速使用</h4>
             <ul class="help-list">
-              <li>可启用“时间段限制”和“星期限制”，仅在有效规则周期内执行动作。</li>
-              <li>若当前不在有效周期，主圆环下方会显示红字提示，且自动循环会暂停。</li>
-              <li>恢复到有效周期后，重新点击“开始”即可继续正常流程。</li>
+              <li>选择 15/30/45/60 分钟，或输入自定义时间后点「设置」。</li>
+              <li>点「开始」计时；「暂停」临时停止，「重置」恢复初始状态。</li>
+              <li>计时进行中改时间：预设只预选，需点「设置」并确认后才会生效。</li>
+              <li>点左下角 CFG 打开设置，选择锁屏/关机、循环规则等。</li>
             </ul>
           </section>
 
           <section class="help-section">
-            <h4>执行模式</h4>
+            <h4>界面与托盘</h4>
             <ul class="help-list">
-              <li>单次执行：完成一次动作后停止，等待手动开始。</li>
-              <li>循环执行：完成后进入“休息中”，到间隔结束自动进入下一轮。</li>
-              <li>循环间隔支持 5/10/15 分钟预设和自定义分钟数。</li>
+              <li>左下角主题按钮循环切换：深色 → 明亮 → 鲜艳欢快。</li>
+              <li>关闭主窗口会最小化到托盘，程序继续在后台运行。</li>
+              <li>到期前会弹出通知，窗口在托盘时同样可见。</li>
             </ul>
           </section>
 
           <section class="help-section">
-            <h4>提前通知与动作</h4>
+            <h4>其它</h4>
             <ul class="help-list">
-              <li>可设置“提前通知时间”（不通知/10秒/30秒/1分钟/5分钟）。</li>
-              <li>通知弹窗支持“立即执行”与“取消”；倒计时结束会自动执行动作。</li>
-              <li>即使窗口在托盘或最小化状态，提前通知也会弹出。</li>
-            </ul>
-          </section>
-
-          <section class="help-section">
-            <h4>托盘、日志与安全</h4>
-            <ul class="help-list">
-              <li>点击窗口关闭按钮会进入系统托盘，不会退出程序。</li>
-              <li>“打开日志文件”会直接打开日志；若不存在会自动创建并记录事件。</li>
-              <li>退出应用需要密码验证；忘记密码可通过密保问题重置。</li>
+              <li>可配置时间段、星期生效规则；不在有效周期内不会执行动作。</li>
+              <li>循环模式完成后进入休息，间隔结束自动开始下一轮。</li>
+              <li>退出程序需验证密码；忘记密码可通过密保问题重置。</li>
             </ul>
           </section>
         </div>
-
-        <p class="help-note">提示：若你已保存新配置但界面状态未更新，可先“重置”再“开始”重新进入完整流程。</p>
       </div>
     </div>
 
@@ -415,6 +462,21 @@
         <div class="auth-actions">
           <button id="btn-reset-password" class="btn btn-primary">重置</button>
           <button id="btn-reset-cancel" class="btn btn-secondary">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 系统标准对话框（提示 / 确认 / 警告） -->
+    <div id="system-dialog" class="system-dialog hidden" role="alertdialog" aria-modal="true" aria-labelledby="system-dialog-title">
+      <div class="system-dialog-card">
+        <div class="system-dialog-header">
+          <span id="system-dialog-icon" class="system-dialog-icon" aria-hidden="true">i</span>
+          <h3 id="system-dialog-title">提示</h3>
+        </div>
+        <p id="system-dialog-message" class="system-dialog-message"></p>
+        <div class="system-dialog-actions">
+          <button id="btn-system-dialog-cancel" class="btn btn-secondary btn-small hidden">取消</button>
+          <button id="btn-system-dialog-ok" class="btn btn-primary btn-small">确定</button>
         </div>
       </div>
     </div>

@@ -97,6 +97,26 @@ pub struct StartupConfig {
     pub start_timer_automatically: bool,
 }
 
+fn default_ui_theme() -> String {
+    "dark".to_string()
+}
+
+/// 界面配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiConfig {
+    #[serde(default = "default_ui_theme")]
+    pub theme: String,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            theme: default_ui_theme(),
+        }
+    }
+}
+
 /// 日志配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogConfig {
@@ -196,6 +216,8 @@ pub struct AppConfig {
     pub schedule: ScheduleConfig,
     pub action: ActionConfig,
     pub startup: StartupConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
     pub log: LogConfig,
     #[serde(default)]
     pub activation: ActivationConfig,
@@ -212,6 +234,7 @@ impl Default for AppConfig {
             schedule: ScheduleConfig::default(),
             action: ActionConfig::default(),
             startup: StartupConfig::default(),
+            ui: UiConfig::default(),
             log: LogConfig::default(),
             activation: ActivationConfig::default(),
             security: SecurityConfig::default(),
@@ -367,6 +390,21 @@ pub fn update_startup_config(
 ) -> Result<(), String> {
     activation::ensure_activated(state.inner())?;
     state.update(|c| c.startup = config)
+}
+
+/// 更新界面配置
+#[tauri::command]
+pub fn update_ui_config(
+    state: tauri::State<std::sync::Arc<ConfigManager>>,
+    config: UiConfig,
+) -> Result<(), String> {
+    activation::ensure_activated(state.inner())?;
+    let theme = match config.theme.as_str() {
+        "light" => "light".to_string(),
+        "vivid" => "vivid".to_string(),
+        _ => "dark".to_string(),
+    };
+    state.update(|c| c.ui.theme = theme)
 }
 
 /// 更新运行时状态（内部使用，用于状态持久化）

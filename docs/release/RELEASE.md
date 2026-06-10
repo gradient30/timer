@@ -134,7 +134,7 @@ git push origin v0.1.0
 ## 六、Fork 者快速上手
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/gradient30/timer.git
 cd timer
 cp config/public/activation.env.example config/local/activation.env
 # 编辑 config/local/activation.env

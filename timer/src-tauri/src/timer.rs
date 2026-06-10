@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -77,6 +78,7 @@ pub struct TimerEngine {
     runtime: Arc<Mutex<TimerRuntime>>,
     config: Arc<Mutex<TimerConfig>>,
     callback: TimerCallback,
+    thread_active: Arc<AtomicBool>,
 }
 
 impl TimerEngine {
@@ -92,6 +94,7 @@ impl TimerEngine {
             })),
             config: Arc::new(Mutex::new(config)),
             callback: Arc::new(Mutex::new(None)),
+            thread_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -140,6 +143,7 @@ impl TimerEngine {
             })),
             config: Arc::new(Mutex::new(config)),
             callback: Arc::new(Mutex::new(None)),
+            thread_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -165,6 +169,11 @@ impl TimerEngine {
         drop(runtime);
         self.spawn_timer_thread();
         Ok(())
+    }
+
+    /// 后台计时线程是否已在运行
+    pub fn is_thread_active(&self) -> bool {
+        self.thread_active.load(Ordering::Relaxed)
     }
 
     /// 获取当前的运行时状态（用于保存）
@@ -217,6 +226,12 @@ impl TimerEngine {
             ));
         }
         drop(config);
+
+        let runtime = self.runtime.lock().unwrap();
+        if runtime.state == TimerState::Running || runtime.state == TimerState::Paused {
+            return Err("计时进行中，请先停止计时或通过界面确认后再修改间隔".to_string());
+        }
+        drop(runtime);
 
         let mut config = self.config.lock().unwrap();
         config.interval_minutes = minutes;
@@ -327,8 +342,13 @@ impl TimerEngine {
 
     /// 启动后台计时线程
     fn spawn_timer_thread(&self) {
+        if self.thread_active.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
         let runtime = Arc::clone(&self.runtime);
         let callback = Arc::clone(&self.callback);
+        let thread_active = Arc::clone(&self.thread_active);
 
         thread::spawn(move || {
             let mut last_tick = Instant::now();
@@ -340,6 +360,7 @@ impl TimerEngine {
 
                 // 检查是否应该停止线程
                 if rt.state != TimerState::Running {
+                    thread_active.store(false, Ordering::SeqCst);
                     break;
                 }
 
@@ -409,6 +430,15 @@ mod tests {
         assert!(engine.set_interval(45).is_ok());
         assert!(engine.set_interval(0).is_err());
         assert!(engine.set_interval(2000).is_err());
+    }
+
+    #[test]
+    fn test_set_interval_rejects_while_running() {
+        let engine = TimerEngine::new();
+        engine.start().unwrap();
+        assert!(engine.set_interval(45).is_err());
+        engine.pause().unwrap();
+        assert!(engine.set_interval(45).is_err());
     }
 
     #[test]

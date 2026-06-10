@@ -100,6 +100,75 @@ impl AppState {
     }
 }
 
+fn persist_timer_runtime(
+    config_manager: &Arc<ConfigManager>,
+    timer: &TimerEngine,
+) -> Result<(), String> {
+    let mut runtime_state = timer.to_runtime_state();
+    if let Ok(cfg) = config_manager.get() {
+        runtime_state.delay_count = cfg.runtime_state.delay_count;
+        runtime_state.delay_quota_date = cfg.runtime_state.delay_quota_date;
+    }
+    config_manager.update(|c| c.runtime_state = runtime_state)
+}
+
+fn sync_timer_on_launch_impl(
+    app: &tauri::AppHandle,
+    config_manager: &Arc<ConfigManager>,
+    app_state: &Mutex<AppState>,
+    rest_lock_guard: &RestLockGuardState,
+) -> Result<(), String> {
+    let config = config_manager.get()?;
+    if !config.activation.activated {
+        return Ok(());
+    }
+
+    let runtime = {
+        let state = app_state.lock().map_err(|e| e.to_string())?;
+        state.timer.get_runtime()
+    };
+
+    let should_resume = matches!(runtime.state, TimerState::Running | TimerState::Paused);
+    let should_auto_start = config.startup.start_timer_automatically
+        && runtime.state == TimerState::Idle
+        && runtime.phase == TimerPhase::Work;
+
+    if !should_resume && !should_auto_start {
+        return Ok(());
+    }
+
+    if should_resume && runtime.state == TimerState::Running && runtime.phase == TimerPhase::Rest {
+        let enforce = config.timer.enforce_relock_during_rest;
+        set_rest_lock_guard(rest_lock_guard, enforce);
+    }
+
+    let state = app_state.lock().map_err(|e| e.to_string())?;
+    configure_timer_callback(
+        &state.timer,
+        app.clone(),
+        Arc::clone(config_manager),
+    );
+
+    if should_resume {
+        if !state.timer.is_thread_active() {
+            state.timer.resume_persisted_countdown()?;
+        }
+    } else {
+        state
+            .timer
+            .set_phase_interval(TimerPhase::Work, config.timer.interval_minutes)?;
+        state.timer.start()?;
+    }
+
+    let _ = persist_timer_runtime(config_manager, &state.timer);
+    drop(state);
+
+    let runtime = app_state.lock().map_err(|e| e.to_string())?.timer.get_runtime();
+    let _ = app.emit("timer-update", &runtime);
+    update_tray_tooltip(app, &runtime);
+    Ok(())
+}
+
 fn apply_startup_behavior(app: &tauri::AppHandle) {
     let config_manager = match app.try_state::<Arc<ConfigManager>>() {
         Some(cm) => cm,
@@ -111,25 +180,10 @@ fn apply_startup_behavior(app: &tauri::AppHandle) {
         Err(_) => return,
     };
 
-    if !config.activation.activated {
-        return;
-    }
-
     if config.startup.start_minimized {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.hide();
         }
-    }
-
-    let should_resume_persisted = matches!(
-        config.runtime_state.timer_status.as_str(),
-        "Running" | "Paused"
-    );
-    let should_auto_start_idle =
-        config.startup.start_timer_automatically && !should_resume_persisted;
-
-    if !should_resume_persisted && !should_auto_start_idle {
-        return;
     }
 
     let app_state = match app.try_state::<Mutex<AppState>>() {
@@ -137,43 +191,38 @@ fn apply_startup_behavior(app: &tauri::AppHandle) {
         None => return,
     };
 
-    let startup_result = (|| -> Result<(), String> {
-        let state = app_state.lock().map_err(|e| e.to_string())?;
+    let rest_lock_guard = match app.try_state::<RestLockGuardState>() {
+        Some(guard) => guard,
+        None => return,
+    };
 
-        configure_timer_callback(
-            &state.timer,
-            app.clone(),
-            Arc::clone(config_manager.inner()),
-        );
-
-        if should_resume_persisted {
-            state.timer.resume_persisted_countdown()?;
-        } else {
-            state
-                .timer
-                .set_phase_interval(TimerPhase::Work, config.timer.interval_minutes)?;
-            state.timer.start()?;
-        }
-
-        let mut runtime_state = state.timer.to_runtime_state();
-        if let Ok(cfg) = config_manager.get() {
-            runtime_state.delay_count = cfg.runtime_state.delay_count;
-            runtime_state.delay_quota_date = cfg.runtime_state.delay_quota_date;
-        }
-        drop(state);
-        let _ = config_manager.update(|c| c.runtime_state = runtime_state);
-        Ok(())
-    })();
-
-    if let Ok(state) = app_state.lock() {
-        let runtime = state.timer.get_runtime();
-        let _ = app.emit("timer-update", runtime.clone());
-        update_tray_tooltip(app, &runtime);
+    if let Err(err) = sync_timer_on_launch_impl(
+        app,
+        config_manager.inner(),
+        app_state.inner(),
+        rest_lock_guard.inner(),
+    ) {
+        eprintln!("启动时同步计时器失败: {}", err);
     }
+}
 
-    if let Err(err) = startup_result {
-        eprintln!("启动时自动开始计时失败: {}", err);
-    }
+/// 前端就绪后再次同步计时器（确保后台线程与 UI 监听已连接）
+#[tauri::command]
+fn sync_timer_on_launch(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<Mutex<AppState>>,
+    config_manager: tauri::State<Arc<ConfigManager>>,
+    rest_lock_guard: tauri::State<RestLockGuardState>,
+) -> Result<TimerRuntime, String> {
+    activation::ensure_activated(config_manager.inner())?;
+    sync_timer_on_launch_impl(
+        &app_handle,
+        config_manager.inner(),
+        state.inner(),
+        rest_lock_guard.inner(),
+    )?;
+    let app_state = state.lock().map_err(|e| e.to_string())?;
+    Ok(app_state.timer.get_runtime())
 }
 
 impl Default for AppState {
@@ -662,7 +711,9 @@ pub fn run(safe_mode: bool) {
             config::update_schedule_config,
             config::update_action_config,
             config::update_startup_config,
+            config::update_ui_config,
             check_schedule_effective,
+            sync_timer_on_launch,
             notifier::delay_execution,
             notifier::confirm_execution,
             notifier::cancel_execution,
@@ -801,12 +852,21 @@ pub fn run(safe_mode: bool) {
             // 保存托盘引用
             app.manage(Mutex::new(app_handle_for_tray));
 
-            // 设置关闭时最小化到托盘
+            // 设置关闭时最小化到托盘，并持久化计时器状态
             let window = app.get_webview_window("main").unwrap();
             let window_clone = window.clone();
+            let app_handle_for_close = app.app_handle().clone();
             window.on_window_event(move |event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
+                    if let (Some(cm), Some(st)) = (
+                        app_handle_for_close.try_state::<Arc<ConfigManager>>(),
+                        app_handle_for_close.try_state::<Mutex<AppState>>(),
+                    ) {
+                        if let Ok(state) = st.lock() {
+                            let _ = persist_timer_runtime(cm.inner(), &state.timer);
+                        }
+                    }
                     let _ = window_clone.hide();
                 }
             });

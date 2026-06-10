@@ -1,11 +1,22 @@
 ﻿import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { showSystemAlert, showSystemConfirm, showSystemWarning } from "./system-dialog";
+import {
+  applyTheme,
+  getNextTheme,
+  getThemeToggleLabel,
+  getThemeToggleTitle,
+  normalizeTheme,
+  type AppTheme,
+} from "./theme";
 
 // DOM 元素
 const timerDisplay = document.getElementById("timer-display") as HTMLDivElement;
 const timerStatus = document.getElementById("timer-status") as HTMLDivElement;
 const progressFill = document.getElementById("progress-fill") as HTMLDivElement;
+const progressRunner = document.getElementById("progress-runner") as HTMLDivElement;
+const progressBarWrap = document.querySelector(".progress-bar-wrap") as HTMLElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
 const timerDisplayContainer = document.querySelector(".timer-display") as HTMLElement;
 
@@ -158,13 +169,23 @@ function updateUI(runtime: any) {
   // 更新时间显示
   timerDisplay.textContent = formatTime(runtime.remaining_seconds);
 
-  // 更新进度条
+  // 更新进度条（小人随剩余时间从右向左移动）
   const progress = totalSeconds > 0 ? (runtime.remaining_seconds / totalSeconds) * 100 : 100;
   progressFill.style.width = `${progress}%`;
+  if (progressBarWrap) {
+    progressBarWrap.style.setProperty("--progress-pos", `${progress}%`);
+  }
+  if (progressRunner) {
+    progressRunner.classList.toggle("is-running", runtime.state === "Running");
+  }
 
   // 更新圆环内提示
   renderTimerLabel(runtime);
   renderStatusText(runtime.state);
+
+  if (timerDisplayContainer) {
+    timerDisplayContainer.classList.toggle("is-running", runtime.state === "Running");
+  }
 
   // 更新按钮状态
   updateButtonStates(runtime.state);
@@ -176,7 +197,7 @@ function renderStatusText(state: string) {
     return;
   }
   statusOverride = null;
-  statusText.textContent = `状态: ${stateMap[state] || state}`;
+  statusText.textContent = `SYS · ${stateMap[state] || state}`;
 }
 
 function formatLockCountdown(seconds: number) {
@@ -186,6 +207,56 @@ function formatLockCountdown(seconds: number) {
     return `${mins}分${secs}秒`;
   }
   return `${secs}秒`;
+}
+
+function isTimerActive(): boolean {
+  return currentState === "Running" || currentState === "Paused";
+}
+
+function highlightPresetMinutes(minutes: number) {
+  document.querySelectorAll(".btn-quick").forEach((btn) => {
+    const value = parseInt((btn as HTMLElement).dataset.minutes || "0", 10);
+    btn.classList.toggle("is-selected", value === minutes);
+  });
+}
+
+function showPendingIntervalHint(minutes: number) {
+  statusOverride = {
+    message: `SYS · 已选 ${minutes} 分钟，点击「设置」后生效`,
+    expiresAt: Date.now() + 5000,
+  };
+  renderStatusText(currentState);
+}
+
+function selectPresetMinutes(minutes: number) {
+  customMinutes.value = minutes.toString();
+  highlightPresetMinutes(minutes);
+  if (isTimerActive()) {
+    showPendingIntervalHint(minutes);
+  }
+}
+
+async function applyTimerInterval(minutes: number) {
+  if (minutes < 1 || minutes > 1440) {
+    await showSystemWarning("请输入 1-1440 之间的数字");
+    return;
+  }
+
+  if (isTimerActive()) {
+    const confirmed = await showSystemConfirm(
+      `当前计时进行中，修改为 ${minutes} 分钟将停止并重置倒计时，是否继续？`
+    );
+    if (!confirmed) {
+      return;
+    }
+    await invoke("stop_timer");
+  }
+
+  await invoke("set_timer_interval", { minutes });
+  highlightPresetMinutes(minutes);
+  statusOverride = null;
+  const runtime = (await invoke("get_timer_runtime")) as any;
+  updateUI(runtime);
 }
 
 function formatActivationCode(value: string) {
@@ -363,7 +434,7 @@ function showNoticeModal(payload: any) {
           maxDelayTimes,
         }) as boolean;
         if (!ok) {
-          alert("已用完所有延后机会");
+          await showSystemWarning("已用完所有延后机会");
           return;
         }
         hideNoticeModal();
@@ -378,7 +449,7 @@ function showNoticeModal(payload: any) {
         await refreshScheduleIndicator();
       } catch (e) {
         console.error("延后失败:", e);
-        alert("延后失败: " + e);
+        await showSystemWarning("延后失败: " + e);
       }
     });
     noticeDelayOptions.appendChild(btn);
@@ -407,7 +478,7 @@ function showNoticeModal(payload: any) {
       await refreshScheduleIndicator();
     } catch (e) {
       console.error("取消执行失败:", e);
-      alert(`取消失败: ${e}`);
+      await showSystemWarning(`取消失败: ${e}`);
     }
   };
   btnNoticeCancel.disabled = !canPostpone;
@@ -626,6 +697,7 @@ async function syncIntervalFromConfig() {
     const config = await invoke("get_config") as any;
     const minutes = config.timer?.interval_minutes ?? 30;
     customMinutes.value = String(minutes);
+    highlightPresetMinutes(minutes);
     loopEnabled = config.timer?.loop_enabled ?? true;
     loopIntervalMinutes = config.timer?.loop_interval_minutes ?? 5;
     enforceRelockDuringRest = config.timer?.enforce_relock_during_rest ?? true;
@@ -642,7 +714,7 @@ async function initAfterActivation() {
   appInitialized = true;
   await syncIntervalFromConfig();
   await refreshActionType();
-  const runtime = await invoke("get_timer_runtime") as any;
+  const runtime = await invoke("sync_timer_on_launch") as any;
   updateUI(runtime);
   await refreshScheduleIndicator();
   await refreshSecurityStatus();
@@ -654,6 +726,7 @@ async function initAfterActivation() {
 // 获取初始状态
 async function init() {
   try {
+    await loadAndApplyTheme();
     await refreshActivationStatus();
     if (!activationStatus.activated) {
       showActivationModal();
@@ -683,7 +756,7 @@ btnStart.addEventListener("click", async () => {
     }
   } catch (e) {
     console.error("启动失败:", e);
-    alert("启动失败: " + e);
+    await showSystemWarning("启动失败: " + e);
   }
 });
 
@@ -706,36 +779,29 @@ btnStop.addEventListener("click", async () => {
   }
 });
 
-// 快速设置
+// 快速设置：计时进行中仅预选，不中断当前倒计时
 document.querySelectorAll(".btn-quick").forEach((btn) => {
   btn.addEventListener("click", async (e) => {
-    const minutes = parseInt((e.target as HTMLElement).dataset.minutes || "30");
+    const minutes = parseInt((e.target as HTMLElement).dataset.minutes || "30", 10);
     try {
-      await invoke("set_timer_interval", { minutes });
-      await invoke("stop_timer");
-      // 更新显示
-      const runtime = await invoke("get_timer_runtime") as any;
-      updateUI(runtime);
+      if (isTimerActive()) {
+        selectPresetMinutes(minutes);
+        return;
+      }
+      await applyTimerInterval(minutes);
     } catch (err) {
-      alert("设置失败: " + err);
+      await showSystemWarning("设置失败: " + err);
     }
   });
 });
 
-// 自定义设置
+// 自定义设置：显式确认后才生效
 btnSetCustom.addEventListener("click", async () => {
-  const minutes = parseInt(customMinutes.value);
-  if (minutes < 1 || minutes > 1440) {
-    alert("请输入 1-1440 之间的数字");
-    return;
-  }
+  const minutes = parseInt(customMinutes.value, 10);
   try {
-    await invoke("set_timer_interval", { minutes });
-    await invoke("stop_timer");
-    const runtime = await invoke("get_timer_runtime") as any;
-    updateUI(runtime);
+    await applyTimerInterval(minutes);
   } catch (err) {
-    alert("设置失败: " + err);
+    await showSystemWarning("设置失败: " + err);
   }
 });
 
@@ -830,6 +896,7 @@ listen("exit-requested", async () => {
 // ===== 设置面板功能 =====
 const btnSettings = document.getElementById("btn-settings") as HTMLButtonElement;
 const btnHelp = document.getElementById("btn-help") as HTMLButtonElement;
+const btnThemeToggle = document.getElementById("btn-theme-toggle") as HTMLButtonElement;
 const helpModal = document.getElementById("help-modal") as HTMLDivElement;
 const btnCloseHelp = document.getElementById("btn-close-help") as HTMLButtonElement;
 const aboutModal = document.getElementById("about-modal") as HTMLDivElement;
@@ -859,6 +926,48 @@ const weekdaysContainer = document.getElementById("weekdays-container") as HTMLD
 const autoStart = document.getElementById("auto-start") as HTMLInputElement;
 const startMinimized = document.getElementById("start-minimized") as HTMLInputElement;
 const startTimerAuto = document.getElementById("start-timer-auto") as HTMLInputElement;
+let currentTheme: AppTheme = "dark";
+
+function updateThemeToggleButton(theme: AppTheme) {
+  currentTheme = theme;
+  if (!btnThemeToggle) {
+    return;
+  }
+  btnThemeToggle.textContent = getThemeToggleLabel(theme);
+  btnThemeToggle.title = getThemeToggleTitle(theme);
+}
+
+async function persistTheme(theme: AppTheme) {
+  try {
+    await invoke("update_ui_config", { config: { theme } });
+  } catch (e) {
+    console.error("保存主题失败:", e);
+  }
+}
+
+async function loadAndApplyTheme() {
+  try {
+    const config = await invoke("get_config") as any;
+    const theme = normalizeTheme(config.ui?.theme);
+    applyTheme(theme);
+    updateThemeToggleButton(theme);
+  } catch (e) {
+    console.error("加载主题失败:", e);
+    applyTheme("dark");
+    updateThemeToggleButton("dark");
+  }
+}
+
+async function toggleTheme() {
+  const nextTheme = getNextTheme(currentTheme);
+  applyTheme(nextTheme);
+  updateThemeToggleButton(nextTheme);
+  await persistTheme(nextTheme);
+}
+
+btnThemeToggle?.addEventListener("click", () => {
+  void toggleTheme();
+});
 
 // 打开设置面板
 btnSettings?.addEventListener("click", async () => {
@@ -1125,6 +1234,10 @@ async function loadSettings() {
       checkbox.checked = weekdays.includes(parseInt(checkbox.value));
     });
 
+    const theme = normalizeTheme(config.ui?.theme);
+    applyTheme(theme);
+    updateThemeToggleButton(theme);
+
     // 启动设置
     autoStart.checked = config.startup?.auto_start || false;
     startMinimized.checked = config.startup?.start_minimized || false;
@@ -1168,7 +1281,7 @@ btnSaveSettings?.addEventListener("click", async () => {
       : (config.timer?.loop_interval_minutes ?? 5);
     const nextEnforceRelock = enforceRelockToggle?.checked ?? true;
     if (nextLoopEnabled && (!Number.isFinite(nextLoopInterval) || nextLoopInterval < 1 || nextLoopInterval > 1440)) {
-      alert("循环间隔请输入 1-1440 分钟");
+      await showSystemWarning("循环间隔请输入 1-1440 分钟");
       return;
     }
 
@@ -1232,11 +1345,11 @@ btnSaveSettings?.addEventListener("click", async () => {
     if (latestRuntime) {
       renderTimerLabel(latestRuntime);
     }
-    alert("设置已保存");
+    await showSystemAlert("设置已保存");
     settingsPanel.classList.add("hidden");
   } catch (e) {
     console.error("保存设置失败:", e);
-    alert("保存设置失败: " + e);
+    await showSystemWarning("保存设置失败: " + e);
   }
 });
 
@@ -1246,7 +1359,7 @@ btnOpenLogFile?.addEventListener("click", async () => {
     await invoke("open_log_file");
   } catch (e) {
     console.error("打开日志文件失败:", e);
-    alert("打开日志文件失败: " + e);
+    await showSystemWarning("打开日志文件失败: " + e);
   }
 });
 
@@ -1256,7 +1369,7 @@ btnTestLock?.addEventListener("click", async () => {
     await invoke("execute_system_action", { action: "lock" });
   } catch (e) {
     console.error("测试锁屏失败:", e);
-    alert("测试锁屏失败: " + e);
+    await showSystemWarning("测试锁屏失败: " + e);
   }
 });
 
