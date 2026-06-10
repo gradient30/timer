@@ -112,7 +112,6 @@ config/local/
 .env / .env.*
 logs/ / *.log
 firebase-debug.log
-.claude/settings.local.json
 timer/src-tauri/target/
 timer/dist/
 ```
