@@ -6,6 +6,11 @@ authors = ["you"]
 edition = "2021"
 default-run = "timer"
 
+[features]
+default = []
+# 仅本地开发构建启用：暴露激活码生成 command 与前端隐藏入口
+activation-admin = []
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]

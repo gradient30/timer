@@ -95,6 +95,19 @@
   font-size: 16px;
   opacity: 0.8;
   margin-top: 10px;
+  max-width: 180px;
+  min-height: 42px;
+  text-align: center;
+  line-height: 1.35;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.timer-label.warning {
+  color: #fecaca;
+  opacity: 1;
+  font-weight: 600;
 }
 
 .progress-bar {
@@ -475,6 +488,53 @@
   color: white;
 }
 
+/* Execution Mode & Loop Interval */
+.execution-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.loop-interval {
+  margin: 12px 0 0 20px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  opacity: 0.7;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+
+.loop-interval.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.loop-interval label,
+.loop-hint {
+  font-size: 13px;
+}
+
+.loop-interval select,
+.loop-interval input[type="number"] {
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font-size: 13px;
+}
+
+.loop-interval select option {
+  background: #764ba2;
+  color: white;
+}
+
+.hidden-input {
+  display: none;
+}
+
 /* Log Actions */
 .log-actions {
   display: flex;
@@ -565,6 +625,109 @@
   justify-content: center;
 }
 
+/* 暂时隐藏取消按钮（保留逻辑） */
+.notice-actions #btn-notice-cancel {
+  display: none;
+}
+
+/* About Modal */
+.about-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2100;
+}
+
+.about-modal.hidden {
+  display: none;
+}
+
+.about-card {
+  width: 420px;
+  max-height: min(82vh, 560px);
+  overflow-y: auto;
+  padding: 20px 22px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(10px);
+  color: white;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.about-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.about-title-group h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.about-version {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.about-tagline {
+  margin: 0 0 14px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.92;
+}
+
+.about-meta {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.about-meta-row {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.about-meta dt {
+  margin: 0 0 4px 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.about-meta dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  opacity: 0.92;
+}
+
+.about-copyright {
+  margin: 14px 0 0 0;
+  font-size: 12px;
+  opacity: 0.8;
+  text-align: center;
+}
+
+.about-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: center;
+}
+
+.about-actions .btn {
+  min-width: 96px;
+}
+
 /* Help Modal */
 .help-modal {
   position: fixed;
@@ -581,7 +744,9 @@
 }
 
 .help-card {
-  width: 420px;
+  width: 460px;
+  max-height: min(78vh, 640px);
+  overflow-y: auto;
   padding: 20px 22px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.12);
@@ -603,15 +768,56 @@
   font-size: 18px;
 }
 
+.help-intro {
+  font-size: 13px;
+  opacity: 0.9;
+  margin: 0 0 12px 0;
+  line-height: 1.55;
+}
+
+.help-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.help-section {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.help-section h4 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
 .help-list {
   margin: 0;
   padding-left: 18px;
   line-height: 1.6;
-  font-size: 14px;
+  font-size: 13px;
+}
+
+.help-list-ordered {
+  padding-left: 20px;
 }
 
 .help-list li {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
+}
+
+.help-note {
+  margin: 12px 0 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  opacity: 0.92;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.12);
+  border: 1px solid rgba(248, 250, 252, 0.22);
 }
 
 .auth-modal {

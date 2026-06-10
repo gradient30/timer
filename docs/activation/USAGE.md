@@ -1,22 +1,38 @@
 # 离线激活码使用说明
 
-## 生成激活码
+## 构建密钥准备
 
-在项目根目录执行：
+生成激活码前，需配置本地构建密钥（不提交 Git）：
 
 ```bash
-cargo run --bin activation_gen --manifest-path "D:\workspace_test\github_repo\timer\timer\src-tauri\Cargo.toml" -- 10
+./scripts/dev.sh setup-config
+# 编辑 config/local/activation.env
 ```
 
-或使用快捷脚本：
+详见 [docs/release/CONFIGURATION.md](../release/CONFIGURATION.md)。
 
-```powershell
-.\scripts\generate-activation.ps1 10
+## 生成激活码
+
+**推荐：CLI 工具（公开发布构建也可用）**
+
+```bash
+./scripts/dev.sh activation 10
 ```
+
+或：
+
+```bash
+cargo run --bin activation_gen --manifest-path timer/src-tauri/Cargo.toml -- 10
+```
+
+**开发构建专属：应用内生成（需 `activation-admin` feature）**
+
+仅在 `./scripts/dev.sh dev` 开发模式下，托盘提示文字连点 10 次可打开生成弹窗。
 
 说明：
 - `10` 表示生成数量，可替换为任意正整数
 - 输出格式为 `XXXX-XXXX-XXXX-XXXX`
+- 公开发布 MSI **不包含**应用内生成入口
 
 ## 发放激活码
 

@@ -1,5 +1,5 @@
 //! 通知模块 - E4: 提示优化
-//! 差异化提示策略：锁屏=弹窗，休眠/关机=托盘通知
+//! 提示策略：锁屏/关机使用弹窗通知
 
 #![allow(dead_code)]
 
@@ -49,7 +49,7 @@ pub struct Notification {
     pub title: String,
     pub message: String,
     pub countdown_seconds: u64,
-    pub action_type: String, // "lock" | "suspend" | "shutdown"
+    pub action_type: String, // "lock" | "shutdown"
     pub delay_count: u32,
     pub max_delay_times: u32,
     pub delay_options: Vec<u64>,
@@ -62,7 +62,7 @@ impl Notifier {
     /// 发送执行前通知
     ///
     /// # 参数
-    /// - `action_type`: "lock" | "suspend" | "shutdown"
+    /// - `action_type`: "lock" | "shutdown"
     /// - `countdown_seconds`: 提前通知秒数
     /// - `delay_count`: 已延后次数
     /// - `max_delay_times`: 最大延后次数
@@ -74,29 +74,32 @@ impl Notifier {
         max_delay_times: u32,
         delay_options: Vec<u64>,
     ) {
-        let (notification_type, title, message) = match action_type {
+        let (notification_type, title, message, effective_action_type) = match action_type {
             "lock" => {
                 // 锁屏使用模态弹窗
                 (
                     NotificationType::Modal,
                     "即将锁屏".to_string(),
                     format!("系统将在 {} 秒后自动锁屏", countdown_seconds),
-                )
-            }
-            "suspend" => {
-                // 休眠使用托盘通知
-                (
-                    NotificationType::Tray,
-                    "即将休眠".to_string(),
-                    format!("系统将在 {} 秒后自动进入休眠状态", countdown_seconds),
+                    "lock",
                 )
             }
             "shutdown" => {
-                // 关机使用托盘通知
+                // 关机使用模态弹窗
                 (
-                    NotificationType::Tray,
+                    NotificationType::Modal,
                     "即将关机".to_string(),
                     format!("系统将在 {} 秒后自动关机", countdown_seconds),
+                    "shutdown",
+                )
+            }
+            "suspend" => {
+                // 兼容旧配置：休眠动作已禁用，改为锁屏
+                (
+                    NotificationType::Modal,
+                    "休眠已禁用".to_string(),
+                    format!("系统将在 {} 秒后自动锁屏（原计划动作：休眠）", countdown_seconds),
+                    "lock",
                 )
             }
             _ => {
@@ -110,7 +113,7 @@ impl Notifier {
             title,
             message,
             countdown_seconds,
-            action_type: action_type.to_string(),
+            action_type: effective_action_type.to_string(),
             delay_count,
             max_delay_times,
             delay_options,
@@ -118,6 +121,7 @@ impl Notifier {
 
         if matches!(notification.notification_type, NotificationType::Modal) {
             if let Some(window) = app_handle.get_webview_window("main") {
+                let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
                 let _ = window.set_always_on_top(true);
@@ -171,15 +175,16 @@ pub fn delay_execution(
     config_manager: tauri::State<Arc<ConfigManager>>,
     app_handle: AppHandle,
     minutes: u64,
-    delay_count: u32,
-    max_delay_times: u32,
+    _delay_count: u32,
+    _max_delay_times: u32,
 ) -> Result<bool, String> {
     activation::ensure_activated(config_manager.inner())?;
+    config::reset_daily_delay_quota_if_needed(config_manager.inner())?;
     let config = config_manager.get()?;
     let current_delay_count = config.runtime_state.delay_count;
     let max_allowed = config.timer.max_delay_times;
 
-    if current_delay_count >= max_allowed || delay_count >= max_delay_times {
+    if current_delay_count >= max_allowed {
         return Ok(false); // 不能再延后
     }
 
@@ -200,6 +205,11 @@ pub fn delay_execution(
         total_seconds: runtime.total_seconds,
         last_update: runtime.last_update.clone().unwrap_or_else(|| chrono::Local::now().to_rfc3339()),
         delay_count: current_delay_count + 1,
+        delay_quota_date: config.runtime_state.delay_quota_date.clone(),
+        cycle_phase: match runtime.phase {
+            crate::timer::TimerPhase::Work => "Work".to_string(),
+            crate::timer::TimerPhase::Rest => "Rest".to_string(),
+        },
     };
     drop(app_state);
     config::update_runtime_state(&config_manager, runtime_state)?;
@@ -219,6 +229,7 @@ pub fn confirm_execution(
     app_handle: AppHandle,
 ) -> Result<(), String> {
     activation::ensure_activated(config_manager.inner())?;
+    config::reset_daily_delay_quota_if_needed(config_manager.inner())?;
     let config = config_manager.get()?;
     system::execute_action(&config.action.action_type);
 
@@ -232,7 +243,9 @@ pub fn confirm_execution(
         remaining_seconds: runtime.total_seconds,
         total_seconds: runtime.total_seconds,
         last_update: chrono::Local::now().to_rfc3339(),
-        delay_count: 0,
+        delay_count: config.runtime_state.delay_count,
+        delay_quota_date: config.runtime_state.delay_quota_date.clone(),
+        cycle_phase: "Work".to_string(),
     };
     config::update_runtime_state(&config_manager, runtime_state)?;
 
@@ -249,6 +262,14 @@ pub fn cancel_execution(
     app_handle: AppHandle,
 ) -> Result<(), String> {
     activation::ensure_activated(config_manager.inner())?;
+    config::reset_daily_delay_quota_if_needed(config_manager.inner())?;
+    let config = config_manager.get()?;
+    let current_delay_count = config.runtime_state.delay_count;
+    let max_allowed = config.timer.max_delay_times;
+    if current_delay_count >= max_allowed {
+        return Err("已达到当日取消上限（次日自动重置），请立即执行或等待自动执行".to_string());
+    }
+
     let app_state = state.lock().map_err(|e| e.to_string())?;
     app_state.timer.stop();
     let runtime = app_state.timer.get_runtime();
@@ -259,7 +280,9 @@ pub fn cancel_execution(
         remaining_seconds: runtime.total_seconds,
         total_seconds: runtime.total_seconds,
         last_update: chrono::Local::now().to_rfc3339(),
-        delay_count: 0,
+        delay_count: current_delay_count + 1,
+        delay_quota_date: config.runtime_state.delay_quota_date.clone(),
+        cycle_phase: "Work".to_string(),
     };
     config::update_runtime_state(&config_manager, runtime_state)?;
 

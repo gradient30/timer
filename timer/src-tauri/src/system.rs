@@ -1,5 +1,5 @@
 //! 系统操作模块 - E3: 执行动作扩展
-//! 锁屏、休眠、关机功能实现
+//! 锁屏、关机功能实现（休眠已禁用）
 
 use std::process::Command;
 use std::sync::Arc;
@@ -7,14 +7,14 @@ use std::sync::Arc;
 use crate::activation;
 use crate::config::ConfigManager;
 
-/// 执行系统操作（锁屏/休眠/关机/打开文件夹）
+/// 执行系统操作（锁屏/关机/打开文件夹）
 ///
 /// # 参数
-/// - `action`: "lock" | "suspend" | "shutdown" | "open_folder"
+/// - `action`: "lock" | "shutdown" | "open_folder"
 /// - `path`: 打开文件夹时的路径（可选）
 ///
 /// # 注意
-/// 休眠和关机需要管理员权限才能成功执行
+/// 关机需要管理员权限才能成功执行
 #[tauri::command]
 pub async fn execute_system_action(
     action: String,
@@ -31,17 +31,7 @@ fn execute_system_action_internal(action: &str, path: Option<String>) -> Result<
             lock_screen();
             Ok(())
         }
-        "suspend" => {
-            #[cfg(windows)]
-            {
-                suspend_system()
-                    .map_err(|e| format!("休眠失败: {}。请确保以管理员权限运行", e))
-            }
-            #[cfg(not(windows))]
-            {
-                Err("休眠功能仅支持 Windows".to_string())
-            }
-        }
+        "suspend" => Err("休眠动作已禁用，请使用锁屏或关机".to_string()),
         "shutdown" => {
             #[cfg(windows)]
             {
@@ -74,28 +64,6 @@ pub fn lock_screen() {
             .args(["user32.dll,LockWorkStation"])
             .spawn()
             .ok();
-    }
-}
-
-/// 使系统进入休眠状态
-/// 使用 rundll32 调用 SetSuspendState
-#[cfg(windows)]
-fn suspend_system() -> Result<(), String> {
-    // 使用 powercfg 或 rundll32 进入休眠
-    // 方法1: 使用 rundll32 powrprof.dll,SetSuspendState
-    // 方法2: 使用 powercfg /hibernate on 然后执行
-    // 这里使用 shutdown /h 命令（最可靠）
-
-    let output = std::process::Command::new("shutdown.exe")
-        .args(["/h"])  // /h = 休眠
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("命令执行失败: {}", stderr))
     }
 }
 
@@ -153,10 +121,8 @@ pub fn execute_action(action_type: &str) {
     match action_type {
         "lock" => lock_screen(),
         "suspend" => {
-            #[cfg(windows)]
-            {
-                let _ = suspend_system();
-            }
+            eprintln!("休眠动作已禁用，回退执行锁屏");
+            lock_screen();
         }
         "shutdown" => {
             #[cfg(windows)]
@@ -178,6 +144,12 @@ mod tests {
     fn test_execute_system_action() {
         // 测试无效操作
         let result = execute_system_action_internal("invalid", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_suspend_disabled() {
+        let result = execute_system_action_internal("suspend", None);
         assert!(result.is_err());
     }
 

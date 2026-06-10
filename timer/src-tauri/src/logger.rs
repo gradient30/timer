@@ -4,12 +4,16 @@
 #![allow(dead_code)]
 
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use tracing::{info, error, debug, warn};
 use std::sync::Arc;
 
 use crate::activation;
 use crate::config::ConfigManager;
+
+const DEFAULT_LOG_FILE_NAME: &str = "combined.log";
 
 /// 初始化日志系统
 ///
@@ -51,6 +55,10 @@ fn get_log_dir() -> Result<PathBuf, String> {
     dirs::config_dir()
         .map(|d| d.join("TimerApp").join("logs"))
         .ok_or_else(|| "无法获取日志目录".to_string())
+}
+
+fn get_default_log_file_path() -> Result<PathBuf, String> {
+    Ok(get_log_dir()?.join(DEFAULT_LOG_FILE_NAME))
 }
 
 /// 清理旧日志文件
@@ -113,24 +121,80 @@ fn cleanup_old_logs(log_dir: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
+fn append_log_line(file_path: &PathBuf, level: &str, message: &str) -> Result<(), String> {
+    if let Some(parent) = file_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("创建日志目录失败: {}", e))?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file_path)
+        .map_err(|e| format!("打开日志文件失败: {}", e))?;
+
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    writeln!(file, "[{}] [{}] {}", timestamp, level, message)
+        .map_err(|e| format!("写入日志失败: {}", e))
+}
+
+fn append_runtime_log(level: &str, message: &str) {
+    if let Ok(file_path) = get_default_log_file_path() {
+        let _ = append_log_line(&file_path, level, message);
+    }
+}
+
+fn open_file_with_system(path: &PathBuf) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("notepad.exe")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("打开日志文件失败: {}", e))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("打开日志文件失败: {}", e))?;
+        Ok(())
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("打开日志文件失败: {}", e))?;
+        Ok(())
+    }
+}
+
 /// 记录操作日志
 pub fn log_operation(action: &str, details: &str) {
     info!("[操作] {}: {}", action, details);
+    append_runtime_log("INFO", &format!("[操作] {}: {}", action, details));
 }
 
 /// 记录错误日志
 pub fn log_error(source: &str, error: &str) {
     error!("[错误] {}: {}", source, error);
+    append_runtime_log("ERROR", &format!("[错误] {}: {}", source, error));
 }
 
 /// 记录调试日志
 pub fn log_debug(category: &str, message: &str) {
     debug!("[调试] {}: {}", category, message);
+    append_runtime_log("DEBUG", &format!("[调试] {}: {}", category, message));
 }
 
 /// 记录警告日志
 pub fn log_warn(category: &str, message: &str) {
     warn!("[警告] {}: {}", category, message);
+    append_runtime_log("WARN", &format!("[警告] {}: {}", category, message));
 }
 
 /// Tauri命令：获取日志目录
@@ -142,12 +206,59 @@ pub fn get_log_directory(
     get_log_dir().map(|p| p.to_string_lossy().to_string())
 }
 
+/// Tauri命令：打开默认日志文件
+/// 若文件不存在会自动创建，并记录操作事件
+#[tauri::command]
+pub fn open_log_file(
+    config_manager: tauri::State<Arc<ConfigManager>>,
+) -> Result<String, String> {
+    activation::ensure_activated(config_manager.inner())?;
+
+    let log_dir = get_log_dir()?;
+    fs::create_dir_all(&log_dir)
+        .map_err(|e| format!("创建日志目录失败: {}", e))?;
+    cleanup_old_logs(&log_dir)?;
+
+    let file_path = get_default_log_file_path()?;
+    let existed = file_path.exists();
+
+    let _ = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file_path)
+        .map_err(|e| format!("创建日志文件失败: {}", e))?;
+
+    if !existed {
+        append_log_line(&file_path, "INFO", "日志文件不存在，已自动创建")?;
+    }
+    append_log_line(&file_path, "INFO", "用户点击“打开日志文件”")?;
+
+    if let Err(err) = open_file_with_system(&file_path) {
+        let _ = append_log_line(&file_path, "ERROR", &format!("打开日志文件失败: {}", err));
+        return Err(err);
+    }
+
+    append_log_line(&file_path, "INFO", "日志文件打开命令执行成功")?;
+    Ok(file_path.to_string_lossy().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_log_dir() {
         let _ = get_log_dir();
+    }
+
+    #[test]
+    fn test_append_log_line() {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        let file_path = std::env::temp_dir().join(format!("timer-log-test-{}.log", ts));
+        append_log_line(&file_path, "INFO", "unit test").unwrap();
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert!(content.contains("unit test"));
+        let _ = fs::remove_file(file_path);
     }
 }

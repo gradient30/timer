@@ -1,0 +1,56 @@
+{
+  "version": "1.1",
+  "timer": {
+    "interval_minutes": 30,
+    "advance_notice_seconds": 30,
+    "max_delay_times": 3,
+    "delay_options": [5, 10, 30],
+    "loop_enabled": true,
+    "loop_interval_minutes": 5,
+    "enforce_relock_during_rest": true
+  },
+  "schedule": {
+    "time_limit_enabled": false,
+    "weekday_limit_enabled": false,
+    "start_time": "09:00",
+    "end_time": "18:00",
+    "weekdays": [1, 2, 3, 4, 5],
+    "logic": "AND"
+  },
+  "action": {
+    "action_type": "lock",
+    "show_notice": true
+  },
+  "startup": {
+    "auto_start": false,
+    "start_minimized": false,
+    "start_timer_automatically": false
+  },
+  "log": {
+    "level": "info",
+    "max_days": 7,
+    "max_file_size_mb": 10,
+    "max_total_size_mb": 100
+  },
+  "activation": {
+    "activated": false,
+    "activation_code_hash": null,
+    "activated_at": null
+  },
+  "security": {
+    "password_hash": null,
+    "security_question": null,
+    "security_answer_hash": null,
+    "failed_attempts": 0,
+    "lock_until": null
+  },
+  "runtime_state": {
+    "timer_status": "Idle",
+    "remaining_seconds": 1800,
+    "total_seconds": 1800,
+    "last_update": "",
+    "delay_count": 0,
+    "delay_quota_date": "",
+    "cycle_phase": "Work"
+  }
+}

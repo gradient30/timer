@@ -12,11 +12,20 @@ const CONFIG_VERSION: &str = "1.1";
 
 /// 定时器配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TimerConfig {
     pub interval_minutes: u64,
     pub advance_notice_seconds: u64,
     pub max_delay_times: u32,
     pub delay_options: Vec<u64>,
+    pub loop_enabled: bool,
+    pub loop_interval_minutes: u64,
+    #[serde(default = "default_enforce_relock_during_rest")]
+    pub enforce_relock_during_rest: bool,
+}
+
+pub fn default_enforce_relock_during_rest() -> bool {
+    true
 }
 
 impl Default for TimerConfig {
@@ -26,6 +35,9 @@ impl Default for TimerConfig {
             advance_notice_seconds: 30,
             max_delay_times: 3,
             delay_options: vec![5, 10, 30],
+            loop_enabled: true,
+            loop_interval_minutes: 5,
+            enforce_relock_during_rest: true,
         }
     }
 }
@@ -57,7 +69,7 @@ impl Default for ScheduleConfig {
 /// 执行动作配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionConfig {
-    pub action_type: String, // "lock", "suspend", "shutdown"
+    pub action_type: String, // "lock", "shutdown"
     pub show_notice: bool,
 }
 
@@ -67,6 +79,13 @@ impl Default for ActionConfig {
             action_type: "lock".to_string(),
             show_notice: true,
         }
+    }
+}
+
+fn normalize_action_type(action_type: &str) -> String {
+    match action_type {
+        "shutdown" => "shutdown".to_string(),
+        _ => "lock".to_string(),
     }
 }
 
@@ -124,6 +143,35 @@ pub struct RuntimeState {
     pub total_seconds: u64,
     pub last_update: String,     // ISO 8601 格式
     pub delay_count: u32,
+    #[serde(default = "default_delay_quota_date")]
+    pub delay_quota_date: String, // YYYY-MM-DD，本地日期
+    #[serde(default = "default_cycle_phase")]
+    pub cycle_phase: String,     // "Work", "Rest"
+}
+
+pub fn default_delay_quota_date() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// 关机/离线期间扣减运行中计时器的剩余秒数
+pub fn offline_adjusted_remaining(saved_state: &RuntimeState) -> u64 {
+    if saved_state.timer_status != "Running" {
+        return saved_state.remaining_seconds;
+    }
+
+    let last_update = chrono::DateTime::parse_from_rfc3339(&saved_state.last_update)
+        .map(|dt| dt.with_timezone(&chrono::Local))
+        .unwrap_or_else(|_| chrono::Local::now());
+
+    let offline_secs = (chrono::Local::now() - last_update)
+        .num_seconds()
+        .max(0) as u64;
+
+    saved_state.remaining_seconds.saturating_sub(offline_secs)
+}
+
+fn default_cycle_phase() -> String {
+    "Work".to_string()
 }
 
 impl Default for RuntimeState {
@@ -134,6 +182,8 @@ impl Default for RuntimeState {
             total_seconds: 1800,
             last_update: chrono::Local::now().to_rfc3339(),
             delay_count: 0,
+            delay_quota_date: default_delay_quota_date(),
+            cycle_phase: "Work".to_string(),
         }
     }
 }
@@ -205,8 +255,9 @@ impl ConfigManager {
         if config_path.exists() {
             let content = fs::read_to_string(config_path)
                 .map_err(|e| format!("读取配置文件失败: {}", e))?;
-            let config: AppConfig = serde_json::from_str(&content)
+            let mut config: AppConfig = serde_json::from_str(&content)
                 .map_err(|e| format!("解析配置文件失败: {}", e))?;
+            config.action.action_type = normalize_action_type(&config.action.action_type);
             Ok(config)
         } else {
             // 创建默认配置
@@ -266,6 +317,7 @@ impl ConfigManager {
 /// 获取配置
 #[tauri::command]
 pub fn get_config(state: tauri::State<std::sync::Arc<ConfigManager>>) -> Result<AppConfig, String> {
+    let _ = reset_daily_delay_quota_if_needed(state.inner());
     state.get()
 }
 
@@ -276,7 +328,11 @@ pub fn update_timer_config(
     config: TimerConfig,
 ) -> Result<(), String> {
     activation::ensure_activated(state.inner())?;
-    state.update(|c| c.timer = config)
+    let mut normalized = config;
+    if normalized.loop_interval_minutes == 0 {
+        normalized.loop_interval_minutes = 5;
+    }
+    state.update(|c| c.timer = normalized)
 }
 
 /// 更新生效规则配置
@@ -296,7 +352,11 @@ pub fn update_action_config(
     config: ActionConfig,
 ) -> Result<(), String> {
     activation::ensure_activated(state.inner())?;
-    state.update(|c| c.action = config)
+    let normalized = ActionConfig {
+        action_type: normalize_action_type(&config.action_type),
+        show_notice: config.show_notice,
+    };
+    state.update(|c| c.action = normalized)
 }
 
 /// 更新启动配置
@@ -314,7 +374,25 @@ pub fn update_runtime_state(
     state: &tauri::State<std::sync::Arc<ConfigManager>>,
     runtime_state: RuntimeState,
 ) -> Result<(), String> {
-    state.update(|c| c.runtime_state = runtime_state)
+    let mut normalized = runtime_state;
+    if normalized.delay_quota_date.trim().is_empty() {
+        normalized.delay_quota_date = default_delay_quota_date();
+    }
+    state.update(|c| c.runtime_state = normalized)
+}
+
+pub fn reset_daily_delay_quota_if_needed(
+    config_manager: &std::sync::Arc<ConfigManager>,
+) -> Result<(), String> {
+    let config = config_manager.get()?;
+    let today = default_delay_quota_date();
+    if config.runtime_state.delay_quota_date == today {
+        return Ok(());
+    }
+    config_manager.update(|c| {
+        c.runtime_state.delay_count = 0;
+        c.runtime_state.delay_quota_date = today;
+    })
 }
 
 #[cfg(test)]
@@ -327,6 +405,9 @@ mod tests {
         assert_eq!(config.version, "1.1");
         assert_eq!(config.timer.interval_minutes, 30);
         assert_eq!(config.timer.max_delay_times, 3);
+        assert!(config.timer.loop_enabled);
+        assert_eq!(config.timer.loop_interval_minutes, 5);
+        assert!(config.timer.enforce_relock_during_rest);
         assert_eq!(config.action.action_type, "lock");
         assert!(config.security.password_hash.is_none());
         assert!(!config.activation.activated);
@@ -340,5 +421,28 @@ mod tests {
         assert!(json.contains("schedule"));
         assert!(json.contains("security"));
         assert!(json.contains("activation"));
+    }
+
+    #[test]
+    fn test_offline_adjusted_remaining_keeps_paused() {
+        let saved = RuntimeState {
+            timer_status: "Paused".to_string(),
+            remaining_seconds: 600,
+            total_seconds: 1800,
+            last_update: chrono::Local::now().to_rfc3339(),
+            delay_count: 0,
+            delay_quota_date: default_delay_quota_date(),
+            cycle_phase: "Work".to_string(),
+        };
+
+        assert_eq!(offline_adjusted_remaining(&saved), 600);
+    }
+
+    #[test]
+    fn test_normalize_action_type() {
+        assert_eq!(normalize_action_type("lock"), "lock");
+        assert_eq!(normalize_action_type("shutdown"), "shutdown");
+        assert_eq!(normalize_action_type("suspend"), "lock");
+        assert_eq!(normalize_action_type("unknown"), "lock");
     }
 }

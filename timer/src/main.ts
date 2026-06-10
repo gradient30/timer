@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+﻿import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -76,10 +76,20 @@ let noticeCountdownTimer: number | null = null;
 let noticePending = false;
 let setupMandatory = false;
 let appInitialized = false;
+let isScheduleEffective = true;
+let currentActionType = "lock";
+let loopEnabled = true;
+let loopIntervalMinutes = 5;
+let enforceRelockDuringRest = true;
+let loopPausedBySchedule = false;
+let latestRuntime: any = null;
+let scheduleRefreshInFlight = false;
+let lastScheduleRefreshAt = 0;
 let trayHintClickCount = 0;
 let trayHintClickTimer: number | null = null;
 let activationStatus = {
   activated: false,
+  admin_enabled: false,
 };
 let securityStatus = {
   password_set: false,
@@ -103,8 +113,45 @@ function formatTime(seconds: number): string {
   return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
 }
 
+function normalizeActionType(actionType: string | undefined): string {
+  return actionType === "shutdown" ? "shutdown" : "lock";
+}
+
+function actionTypeDisplay(actionType: string): string {
+  return actionType === "shutdown" ? "关机" : "锁屏";
+}
+
+function renderTimerLabel(runtime: any) {
+  if (!timerStatus) return;
+
+  timerStatus.classList.remove("warning");
+
+  if (runtime.state === "Running") {
+    if ((runtime.phase || "Work") === "Rest") {
+      timerStatus.textContent = `休息中，${formatLockCountdown(runtime.remaining_seconds)}后开始自动循环事件`;
+      return;
+    }
+    if (!isScheduleEffective) {
+      timerStatus.textContent = "当前不在生效周期（到点不执行）";
+      timerStatus.classList.add("warning");
+      return;
+    }
+    timerStatus.textContent = `${formatTime(runtime.remaining_seconds)}后执行：${actionTypeDisplay(currentActionType)}`;
+    return;
+  }
+
+  if (loopPausedBySchedule && !isScheduleEffective) {
+    timerStatus.textContent = "当前不在生效周期（自动循环已暂停）";
+    timerStatus.classList.add("warning");
+    return;
+  }
+
+  timerStatus.textContent = stateMap[runtime.state] || runtime.state;
+}
+
 // 更新UI
 function updateUI(runtime: any) {
+  latestRuntime = runtime;
   currentState = runtime.state;
   totalSeconds = runtime.total_seconds;
 
@@ -115,8 +162,8 @@ function updateUI(runtime: any) {
   const progress = totalSeconds > 0 ? (runtime.remaining_seconds / totalSeconds) * 100 : 100;
   progressFill.style.width = `${progress}%`;
 
-  // 更新状态文本
-  timerStatus.textContent = stateMap[runtime.state] || runtime.state;
+  // 更新圆环内提示
+  renderTimerLabel(runtime);
   renderStatusText(runtime.state);
 
   // 更新按钮状态
@@ -186,7 +233,23 @@ async function refreshActivationStatus() {
   const status = await invoke("get_activation_status") as any;
   activationStatus = {
     activated: !!status.activated,
+    admin_enabled: !!status.admin_enabled,
   };
+}
+
+async function refreshActionType() {
+  try {
+    const config = await invoke("get_config") as any;
+    currentActionType = normalizeActionType(config.action?.action_type);
+    loopEnabled = config.timer?.loop_enabled ?? true;
+    loopIntervalMinutes = config.timer?.loop_interval_minutes ?? 5;
+    enforceRelockDuringRest = config.timer?.enforce_relock_during_rest ?? true;
+    if (latestRuntime) {
+      renderTimerLabel(latestRuntime);
+    }
+  } catch (e) {
+    console.error("获取执行动作配置失败:", e);
+  }
 }
 
 function clearAuthErrors() {
@@ -253,9 +316,15 @@ function clearNoticeCountdown() {
   }
 }
 
+function clearStatusOverride() {
+  statusOverride = null;
+  renderStatusText(currentState);
+}
+
 function hideNoticeModal() {
   clearNoticeCountdown();
   noticePending = false;
+  clearStatusOverride();
   noticeModal?.classList.add("hidden");
   invoke("set_window_topmost", { enabled: false }).catch((e) => {
     console.error("取消置顶失败:", e);
@@ -277,12 +346,15 @@ function showNoticeModal(payload: any) {
   const delayOptions: number[] = payload.delay_options || [];
   const maxDelayTimes = payload.max_delay_times ?? 3;
   const delayCount = payload.delay_count ?? 0;
-  const canDelay = delayCount < maxDelayTimes;
+  const canPostpone = delayCount < maxDelayTimes;
+  if (!canPostpone) {
+    noticeMessage.textContent = `${payload.message || "系统即将执行操作"}（已达到当日取消上限）`;
+  }
   delayOptions.forEach((minutes) => {
     const btn = document.createElement("button");
     btn.className = "btn btn-secondary btn-small";
     btn.textContent = `延后${minutes}分钟`;
-    btn.disabled = !canDelay;
+    btn.disabled = !canPostpone;
     btn.addEventListener("click", async () => {
       try {
         const ok = await invoke("delay_execution", {
@@ -316,6 +388,7 @@ function showNoticeModal(payload: any) {
     try {
       await invoke("confirm_execution");
       hideNoticeModal();
+      await maybeStartLoopRestCycle(currentActionType === "lock" && enforceRelockDuringRest);
       const runtime = await invoke("get_timer_runtime") as any;
       updateUI(runtime);
       await refreshScheduleIndicator();
@@ -328,13 +401,17 @@ function showNoticeModal(payload: any) {
     try {
       await invoke("cancel_execution");
       hideNoticeModal();
+      await maybeStartLoopRestCycle(false);
       const runtime = await invoke("get_timer_runtime") as any;
       updateUI(runtime);
       await refreshScheduleIndicator();
     } catch (e) {
       console.error("取消执行失败:", e);
+      alert(`取消失败: ${e}`);
     }
   };
+  btnNoticeCancel.disabled = !canPostpone;
+  btnNoticeCancel.textContent = canPostpone ? "取消" : "取消（当日已达上限）";
 
   clearNoticeCountdown();
   let remaining = payload.countdown_seconds ?? 0;
@@ -344,7 +421,10 @@ function showNoticeModal(payload: any) {
       noticeCountdown.textContent = "0";
       if (noticePending) {
         invoke("confirm_execution")
-          .then(() => hideNoticeModal())
+          .then(async () => {
+            hideNoticeModal();
+            await maybeStartLoopRestCycle(currentActionType === "lock" && enforceRelockDuringRest);
+          })
           .catch((e) => console.error("自动执行失败:", e));
       }
       return;
@@ -356,24 +436,100 @@ function showNoticeModal(payload: any) {
 }
 
 function setScheduleIndicator(isEffective: boolean) {
+  isScheduleEffective = isEffective;
+  if (isEffective) {
+    loopPausedBySchedule = false;
+  }
   if (!timerDisplayContainer) return;
   if (isEffective) {
     timerDisplayContainer.classList.remove("schedule-inactive");
   } else {
     timerDisplayContainer.classList.add("schedule-inactive");
   }
+  if (latestRuntime) {
+    renderTimerLabel(latestRuntime);
+  }
 }
 
-async function refreshScheduleIndicator() {
+async function refreshScheduleIndicator(useThrottle = false) {
+  const now = Date.now();
+  if (useThrottle && now - lastScheduleRefreshAt < 2000) {
+    return;
+  }
+  if (scheduleRefreshInFlight) {
+    return;
+  }
+  scheduleRefreshInFlight = true;
   try {
     const isEffective = await invoke("check_schedule_effective") as boolean;
     setScheduleIndicator(isEffective);
+    lastScheduleRefreshAt = Date.now();
   } catch (e) {
     console.error("检查生效规则失败:", e);
+  } finally {
+    scheduleRefreshInFlight = false;
+  }
+}
+
+function showLoopPausedWarning() {
+  loopPausedBySchedule = true;
+  statusOverride = {
+    message: "当前不在生效周期，自动循环已暂停",
+    expiresAt: Date.now() + 6000,
+  };
+  renderStatusText(currentState);
+  if (latestRuntime) {
+    renderTimerLabel(latestRuntime);
+  }
+}
+
+async function maybeStartLoopRestCycle(enforceLock = false) {
+  if (!loopEnabled) {
+    return;
+  }
+
+  try {
+    const effective = await invoke("check_schedule_effective") as boolean;
+    setScheduleIndicator(effective);
+    if (!effective) {
+      showLoopPausedWarning();
+      return;
+    }
+
+    await invoke("start_loop_rest_timer", { minutes: loopIntervalMinutes, enforceLock });
+    const runtime = await invoke("get_timer_runtime") as any;
+    updateUI(runtime);
+  } catch (e) {
+    console.error("启动循环休息阶段失败:", e);
+  }
+}
+
+async function maybeStartNextWorkCycle() {
+  if (!loopEnabled) {
+    return;
+  }
+
+  try {
+    const effective = await invoke("check_schedule_effective") as boolean;
+    setScheduleIndicator(effective);
+    if (!effective) {
+      showLoopPausedWarning();
+      return;
+    }
+
+    await invoke("start_work_cycle_timer");
+    const runtime = await invoke("get_timer_runtime") as any;
+    updateUI(runtime);
+  } catch (e) {
+    console.error("启动下一轮工作阶段失败:", e);
   }
 }
 
 trayHint?.addEventListener("click", () => {
+  if (!activationStatus.admin_enabled) {
+    return;
+  }
+
   trayHintClickCount += 1;
   if (trayHintClickTimer) {
     window.clearTimeout(trayHintClickTimer);
@@ -465,11 +621,27 @@ function updateButtonStates(state: string) {
   }
 }
 
+async function syncIntervalFromConfig() {
+  try {
+    const config = await invoke("get_config") as any;
+    const minutes = config.timer?.interval_minutes ?? 30;
+    customMinutes.value = String(minutes);
+    loopEnabled = config.timer?.loop_enabled ?? true;
+    loopIntervalMinutes = config.timer?.loop_interval_minutes ?? 5;
+    enforceRelockDuringRest = config.timer?.enforce_relock_during_rest ?? true;
+    currentActionType = normalizeActionType(config.action?.action_type);
+  } catch (e) {
+    console.error("同步配置间隔失败:", e);
+  }
+}
+
 async function initAfterActivation() {
   if (appInitialized) {
     return;
   }
   appInitialized = true;
+  await syncIntervalFromConfig();
+  await refreshActionType();
   const runtime = await invoke("get_timer_runtime") as any;
   updateUI(runtime);
   await refreshScheduleIndicator();
@@ -496,11 +668,13 @@ async function init() {
 // 监听计时器更新事件
 listen("timer-update", (event: any) => {
   updateUI(event.payload);
+  void refreshScheduleIndicator(true);
 });
 
 // 开始/继续
 btnStart.addEventListener("click", async () => {
   try {
+    loopPausedBySchedule = false;
     await refreshScheduleIndicator();
     if (currentState === "Paused") {
       await invoke("resume_timer");
@@ -579,14 +753,23 @@ listen("tray-quick-set", (event: any) => {
 listen("timer-finished", async () => {
   try {
     await invoke("save_timer_finished_state");
+    await maybeStartLoopRestCycle(currentActionType === "lock" && enforceRelockDuringRest);
   } catch (e) {
     console.error("保存计时完成状态失败:", e);
   }
 });
 
+listen("loop-rest-finished", async () => {
+  await maybeStartNextWorkCycle();
+});
+
 // 监听提前通知事件
 listen("timer-notify", async (event: any) => {
   const payload = event.payload || {};
+  currentActionType = normalizeActionType(payload.action_type || currentActionType);
+  if (latestRuntime) {
+    renderTimerLabel(latestRuntime);
+  }
   const message = payload.message || "即将执行操作";
   const countdownSeconds = payload.countdown_seconds ?? 0;
   const durationMs = Math.max(5000, countdownSeconds * 1000);
@@ -622,6 +805,16 @@ async function refreshSecurityStatus() {
   }
 }
 
+function showAboutModal() {
+  aboutModal?.classList.remove("hidden");
+}
+
+function hideAboutModal() {
+  aboutModal?.classList.add("hidden");
+}
+
+listen("show-about", () => showAboutModal());
+
 listen("exit-requested", async () => {
   await refreshActivationStatus();
   if (!activationStatus.activated) {
@@ -639,12 +832,20 @@ const btnSettings = document.getElementById("btn-settings") as HTMLButtonElement
 const btnHelp = document.getElementById("btn-help") as HTMLButtonElement;
 const helpModal = document.getElementById("help-modal") as HTMLDivElement;
 const btnCloseHelp = document.getElementById("btn-close-help") as HTMLButtonElement;
+const aboutModal = document.getElementById("about-modal") as HTMLDivElement;
+const btnCloseAbout = document.getElementById("btn-close-about") as HTMLButtonElement;
+const btnAboutOk = document.getElementById("btn-about-ok") as HTMLButtonElement;
 const settingsPanel = document.getElementById("settings-panel") as HTMLDivElement;
 const btnCloseSettings = document.getElementById("btn-close-settings") as HTMLButtonElement;
 const btnSaveSettings = document.getElementById("btn-save-settings") as HTMLButtonElement;
-const btnOpenLogDir = document.getElementById("btn-open-log-dir") as HTMLButtonElement;
+const btnOpenLogFile = document.getElementById("btn-open-log-file") as HTMLButtonElement;
 const btnTestLock = document.getElementById("btn-test-lock") as HTMLButtonElement;
 const advanceNotice = document.getElementById("advance-notice") as HTMLSelectElement;
+const executionModeOptions = document.querySelectorAll("input[name=\"execution-mode\"]") as NodeListOf<HTMLInputElement>;
+const loopIntervalContainer = document.getElementById("loop-interval-container") as HTMLDivElement;
+const loopIntervalPreset = document.getElementById("loop-interval-preset") as HTMLSelectElement;
+const loopIntervalCustom = document.getElementById("loop-interval-custom") as HTMLInputElement;
+const enforceRelockToggle = document.getElementById("enforce-relock") as HTMLInputElement;
 
 // 设置项元素
 const timeLimitEnabled = document.getElementById("time-limit-enabled") as HTMLInputElement;
@@ -676,6 +877,14 @@ btnCloseHelp?.addEventListener("click", () => {
 helpModal?.addEventListener("click", (event) => {
   if (event.target === helpModal) {
     helpModal.classList.add("hidden");
+  }
+});
+
+btnCloseAbout?.addEventListener("click", hideAboutModal);
+btnAboutOk?.addEventListener("click", hideAboutModal);
+aboutModal?.addEventListener("click", (event) => {
+  if (event.target === aboutModal) {
+    hideAboutModal();
   }
 });
 
@@ -838,15 +1047,63 @@ weekdayLimitEnabled?.addEventListener("change", () => {
   }
 });
 
+function updateLoopIntervalControls() {
+  const mode = (document.querySelector("input[name=\"execution-mode\"]:checked") as HTMLInputElement)?.value || "loop";
+  if (mode === "loop") {
+    loopIntervalContainer?.classList.add("active");
+  } else {
+    loopIntervalContainer?.classList.remove("active");
+  }
+
+  if (loopIntervalPreset?.value === "custom") {
+    loopIntervalCustom?.classList.remove("hidden-input");
+  } else {
+    loopIntervalCustom?.classList.add("hidden-input");
+    loopIntervalCustom.value = loopIntervalPreset?.value || "5";
+  }
+}
+
+function applyLoopIntervalValue(minutes: number) {
+  const presets = new Set([5, 10, 15]);
+  if (presets.has(minutes)) {
+    loopIntervalPreset.value = minutes.toString();
+    loopIntervalCustom.value = minutes.toString();
+    loopIntervalCustom.classList.add("hidden-input");
+    return;
+  }
+  loopIntervalPreset.value = "custom";
+  loopIntervalCustom.classList.remove("hidden-input");
+  loopIntervalCustom.value = minutes.toString();
+}
+
+function resolveLoopIntervalMinutesFromUI(): number {
+  if (loopIntervalPreset.value !== "custom") {
+    return parseInt(loopIntervalPreset.value, 10);
+  }
+  return parseInt(loopIntervalCustom.value, 10);
+}
+
+executionModeOptions?.forEach((option) => {
+  option.addEventListener("change", updateLoopIntervalControls);
+});
+
+loopIntervalPreset?.addEventListener("change", updateLoopIntervalControls);
+
 // 加载设置
 async function loadSettings() {
   try {
     const config = await invoke("get_config") as any;
 
     // 执行动作
-    const action = config.action?.action_type || "lock";
+    const action = normalizeActionType(config.action?.action_type);
+    currentActionType = action;
     const actionRadio = document.querySelector(`input[name="action"][value="${action}"]`) as HTMLInputElement;
-    if (actionRadio) actionRadio.checked = true;
+    if (actionRadio) {
+      actionRadio.checked = true;
+    }
+    if (latestRuntime) {
+      renderTimerLabel(latestRuntime);
+    }
 
     // 时间段限制
     timeLimitEnabled.checked = config.schedule?.time_limit_enabled || false;
@@ -877,6 +1134,20 @@ async function loadSettings() {
     if (advanceNotice) {
       advanceNotice.value = (config.timer?.advance_notice_seconds ?? 30).toString();
     }
+
+    // 循环设置
+    loopEnabled = config.timer?.loop_enabled ?? true;
+    loopIntervalMinutes = config.timer?.loop_interval_minutes ?? 5;
+    enforceRelockDuringRest = config.timer?.enforce_relock_during_rest ?? true;
+    const modeRadio = document.querySelector(`input[name="execution-mode"][value="${loopEnabled ? "loop" : "single"}"]`) as HTMLInputElement;
+    if (modeRadio) {
+      modeRadio.checked = true;
+    }
+    applyLoopIntervalValue(loopIntervalMinutes);
+    updateLoopIntervalControls();
+    if (enforceRelockToggle) {
+      enforceRelockToggle.checked = enforceRelockDuringRest;
+    }
   } catch (e) {
     console.error("加载设置失败:", e);
   }
@@ -888,7 +1159,18 @@ btnSaveSettings?.addEventListener("click", async () => {
     const config = await invoke("get_config") as any;
     // 获取执行动作
     const actionRadio = document.querySelector("input[name=\"action\"]:checked") as HTMLInputElement;
-    const actionType = actionRadio?.value || "lock";
+    const actionType = normalizeActionType(actionRadio?.value || "lock");
+    const selectedMode = (document.querySelector("input[name=\"execution-mode\"]:checked") as HTMLInputElement)?.value || "loop";
+    const nextLoopEnabled = selectedMode === "loop";
+    const resolvedLoopInterval = resolveLoopIntervalMinutesFromUI();
+    const nextLoopInterval = Number.isFinite(resolvedLoopInterval) && resolvedLoopInterval > 0
+      ? resolvedLoopInterval
+      : (config.timer?.loop_interval_minutes ?? 5);
+    const nextEnforceRelock = enforceRelockToggle?.checked ?? true;
+    if (nextLoopEnabled && (!Number.isFinite(nextLoopInterval) || nextLoopInterval < 1 || nextLoopInterval > 1440)) {
+      alert("循环间隔请输入 1-1440 分钟");
+      return;
+    }
 
     // 获取星期选择
     const selectedWeekdays: number[] = [];
@@ -903,6 +1185,7 @@ btnSaveSettings?.addEventListener("click", async () => {
         show_notice: true,
       },
     });
+    currentActionType = actionType;
 
     // 保存生效规则配置
     await invoke("update_schedule_config", {
@@ -933,13 +1216,22 @@ btnSaveSettings?.addEventListener("click", async () => {
         advance_notice_seconds: noticeSeconds,
         max_delay_times: config.timer?.max_delay_times ?? 3,
         delay_options: config.timer?.delay_options ?? [5, 10, 30],
+        loop_enabled: nextLoopEnabled,
+        loop_interval_minutes: nextLoopInterval,
+        enforce_relock_during_rest: nextEnforceRelock,
       },
     });
+    loopEnabled = nextLoopEnabled;
+    loopIntervalMinutes = nextLoopInterval;
+    enforceRelockDuringRest = nextEnforceRelock;
 
     // 保存开机自启
     await invoke("set_auto_start", { enabled: autoStart.checked });
 
     await refreshScheduleIndicator();
+    if (latestRuntime) {
+      renderTimerLabel(latestRuntime);
+    }
     alert("设置已保存");
     settingsPanel.classList.add("hidden");
   } catch (e) {
@@ -948,13 +1240,13 @@ btnSaveSettings?.addEventListener("click", async () => {
   }
 });
 
-// 打开日志目录
-btnOpenLogDir?.addEventListener("click", async () => {
+// 打开日志文件（自动创建并写入日志事件）
+btnOpenLogFile?.addEventListener("click", async () => {
   try {
-    const logDir = await invoke("get_log_directory") as string;
-    await invoke("execute_system_action", { action: "open_folder", path: logDir });
+    await invoke("open_log_file");
   } catch (e) {
-    console.error("打开日志目录失败:", e);
+    console.error("打开日志文件失败:", e);
+    alert("打开日志文件失败: " + e);
   }
 });
 

@@ -1,0 +1,30 @@
+# ===== 本地开发与敏感配置（禁止提交） =====
+config/local/
+.env
+.env.*
+!.env.example
+*.local
+
+# ===== 运行时数据与日志 =====
+logs/
+*.log
+firebase-debug.log
+combined.log
+
+# ===== 编辑器 / 工具本地状态 =====
+.claude/settings.local.json
+.vscode/*
+!.vscode/extensions.json
+
+# ===== 构建产物 =====
+timer/dist/
+timer/src-tauri/target/
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+
+# ===== 个人脚本（勿提交） =====
+git-sync-to-tcloud.sh
+git_init_tcloud.sh
+scripts/local/

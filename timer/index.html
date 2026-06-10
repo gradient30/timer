@@ -81,10 +81,6 @@
               <span>🔒 锁屏</span>
             </label>
             <label class="radio-label">
-              <input type="radio" name="action" value="suspend" />
-              <span>💤 休眠</span>
-            </label>
-            <label class="radio-label">
               <input type="radio" name="action" value="shutdown" />
               <span>⏻ 关机</span>
             </label>
@@ -136,6 +132,36 @@
           </div>
         </section>
 
+        <!-- 循环设置 -->
+        <section class="setting-section">
+          <h3>循环设置</h3>
+          <div class="execution-mode">
+            <label class="radio-label">
+              <input type="radio" name="execution-mode" value="single" />
+              <span>单次执行（完成后停止）</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="execution-mode" value="loop" checked />
+              <span>循环执行（自动进入下一轮）</span>
+            </label>
+          </div>
+          <div id="loop-interval-container" class="loop-interval active">
+            <label for="loop-interval-preset">循环间隔：</label>
+            <select id="loop-interval-preset">
+              <option value="5" selected>5分钟</option>
+              <option value="10">10分钟</option>
+              <option value="15">15分钟</option>
+              <option value="custom">自定义</option>
+            </select>
+            <input type="number" id="loop-interval-custom" min="1" max="1440" value="5" class="hidden-input" />
+            <span class="loop-hint">默认 5~15 分钟，可自定义</span>
+          </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="enforce-relock" checked />
+            <span>休息阶段强制锁屏（解锁后会再次锁回）</span>
+          </label>
+        </section>
+
         <!-- 启动设置 -->
         <section class="setting-section">
           <h3>启动设置</h3>
@@ -157,7 +183,7 @@
         <section class="setting-section">
           <h3>日志</h3>
           <div class="log-actions">
-            <button id="btn-open-log-dir" class="btn btn-small">打开日志目录</button>
+            <button id="btn-open-log-file" class="btn btn-small">打开日志文件</button>
             <button id="btn-test-lock" class="btn btn-small btn-test">测试锁屏</button>
           </div>
         </section>
@@ -169,18 +195,101 @@
     </div>
 
     <!-- 使用说明 -->
+    <div id="about-modal" class="about-modal hidden">
+      <div class="about-card">
+        <div class="about-header">
+          <div class="about-title-group">
+            <h3>TimerApp</h3>
+            <span class="about-version">版本 0.1.0</span>
+          </div>
+          <button id="btn-close-about" class="btn-close">✕</button>
+        </div>
+        <p class="about-tagline">Windows 定时提醒与系统动作工具</p>
+        <dl class="about-meta">
+          <div class="about-meta-row">
+            <dt>产品说明</dt>
+            <dd>按自定义时间间隔倒计时，在到期前提前通知，并执行锁屏或关机等系统动作；支持托盘后台运行与生效规则配置。</dd>
+          </div>
+          <div class="about-meta-row">
+            <dt>主要功能</dt>
+            <dd>定时倒计时、提前通知与延后、锁屏/关机、时间段与星期生效规则、循环休息、开机自启、退出密码保护、操作日志。</dd>
+          </div>
+          <div class="about-meta-row">
+            <dt>适用系统</dt>
+            <dd>Windows 10 / Windows 11（64 位）</dd>
+          </div>
+          <div class="about-meta-row">
+            <dt>运行要求</dt>
+            <dd>关机等功能建议以管理员权限运行；关闭主窗口后程序驻留系统托盘，不会退出。</dd>
+          </div>
+          <div class="about-meta-row">
+            <dt>技术框架</dt>
+            <dd>Rust + Tauri 2</dd>
+          </div>
+        </dl>
+        <p class="about-copyright">© 2026 TimerApp. 保留所有权利。</p>
+        <div class="about-actions">
+          <button id="btn-about-ok" class="btn btn-primary">确定</button>
+        </div>
+      </div>
+    </div>
+
     <div id="help-modal" class="help-modal hidden">
       <div class="help-card">
         <div class="help-header">
           <h3>使用说明</h3>
           <button id="btn-close-help" class="btn-close">✕</button>
         </div>
-        <ul class="help-list">
-          <li>选择快速/自定义时间后点击“开始”，可随时暂停或重置。</li>
-          <li>右上角“设置”中可配置执行动作、生效规则与提前通知。</li>
-          <li>到达提醒时会弹窗，可延后或取消；倒计时结束将自动执行。</li>
-          <li>关闭主窗口会最小化到托盘，托盘菜单可控制计时。</li>
-        </ul>
+        <p class="help-intro">以下说明对应当前版本功能，建议首次使用按“快速开始”配置一次。</p>
+
+        <div class="help-sections">
+          <section class="help-section">
+            <h4>快速开始</h4>
+            <ol class="help-list help-list-ordered">
+              <li>在主界面选择 15/30/45/60 分钟，或输入自定义分钟数并点击“设置”。</li>
+              <li>点击“开始”进入计时，点击“暂停”可临时停止，点击“重置”恢复初始状态。</li>
+              <li>点击右上角“设置”选择执行动作（锁屏/关机）并保存。</li>
+            </ol>
+          </section>
+
+          <section class="help-section">
+            <h4>生效规则</h4>
+            <ul class="help-list">
+              <li>可启用“时间段限制”和“星期限制”，仅在有效规则周期内执行动作。</li>
+              <li>若当前不在有效周期，主圆环下方会显示红字提示，且自动循环会暂停。</li>
+              <li>恢复到有效周期后，重新点击“开始”即可继续正常流程。</li>
+            </ul>
+          </section>
+
+          <section class="help-section">
+            <h4>执行模式</h4>
+            <ul class="help-list">
+              <li>单次执行：完成一次动作后停止，等待手动开始。</li>
+              <li>循环执行：完成后进入“休息中”，到间隔结束自动进入下一轮。</li>
+              <li>循环间隔支持 5/10/15 分钟预设和自定义分钟数。</li>
+            </ul>
+          </section>
+
+          <section class="help-section">
+            <h4>提前通知与动作</h4>
+            <ul class="help-list">
+              <li>可设置“提前通知时间”（不通知/10秒/30秒/1分钟/5分钟）。</li>
+              <li>通知弹窗支持“立即执行”与“取消”；倒计时结束会自动执行动作。</li>
+              <li>即使窗口在托盘或最小化状态，提前通知也会弹出。</li>
+            </ul>
+          </section>
+
+          <section class="help-section">
+            <h4>托盘、日志与安全</h4>
+            <ul class="help-list">
+              <li>点击窗口关闭按钮会进入系统托盘，不会退出程序。</li>
+              <li>“打开日志文件”会直接打开日志；若不存在会自动创建并记录事件。</li>
+              <li>退出应用需要密码验证；忘记密码可通过密保问题重置。</li>
+            </ul>
+          </section>
+        </div>
+
+        <p class="help-note">提示：若你已保存新配置但界面状态未更新，可先“重置”再“开始”重新进入完整流程。</p>
       </div>
     </div>
 

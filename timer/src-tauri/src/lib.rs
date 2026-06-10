@@ -1,9 +1,13 @@
-use tauri::{
+﻿use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     Emitter, Manager, WindowEvent,
 };
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Mutex,
+};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // 导入各模块
 mod timer;
@@ -17,7 +21,7 @@ mod logger;
 pub mod activation;
 mod security;
 
-use timer::{TimerEngine, TimerRuntime, TimerConfig as TimerSettings, TimerState};
+use timer::{TimerEngine, TimerRuntime, TimerConfig as TimerSettings, TimerState, TimerPhase};
 use config::ConfigManager;
 use std::sync::Arc;
 
@@ -29,6 +33,30 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct RuntimeFlags {
     pub safe_mode: bool,
+}
+
+const REST_RELOCK_INTERVAL_SECS: u64 = 3;
+
+#[derive(Default)]
+pub struct RestLockGuardState {
+    enforce_during_rest: AtomicBool,
+    last_relock_unix_secs: AtomicU64,
+}
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn set_rest_lock_guard(rest_lock_guard: &RestLockGuardState, enforce: bool) {
+    rest_lock_guard
+        .enforce_during_rest
+        .store(enforce, Ordering::Relaxed);
+    rest_lock_guard
+        .last_relock_unix_secs
+        .store(if enforce { unix_now_secs() } else { 0 }, Ordering::Relaxed);
 }
 
 fn format_remaining(seconds: u64) -> String {
@@ -60,13 +88,91 @@ impl AppState {
     pub fn from_config(config_manager: &ConfigManager) -> Self {
         let config = config_manager.get().unwrap_or_default();
         let timer = if config.runtime_state.timer_status != "Idle" {
-            // 如果上次是运行或暂停状态，恢复状态
-            TimerEngine::from_runtime_state(&config.runtime_state)
+            TimerEngine::from_runtime_state_with_interval(
+                &config.runtime_state,
+                config.timer.interval_minutes,
+            )
         } else {
-            TimerEngine::new()
+            TimerEngine::from_interval_minutes(config.timer.interval_minutes)
         };
 
         Self { timer }
+    }
+}
+
+fn apply_startup_behavior(app: &tauri::AppHandle) {
+    let config_manager = match app.try_state::<Arc<ConfigManager>>() {
+        Some(cm) => cm,
+        None => return,
+    };
+
+    let config = match config_manager.get() {
+        Ok(cfg) => cfg,
+        Err(_) => return,
+    };
+
+    if !config.activation.activated {
+        return;
+    }
+
+    if config.startup.start_minimized {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.hide();
+        }
+    }
+
+    let should_resume_persisted = matches!(
+        config.runtime_state.timer_status.as_str(),
+        "Running" | "Paused"
+    );
+    let should_auto_start_idle =
+        config.startup.start_timer_automatically && !should_resume_persisted;
+
+    if !should_resume_persisted && !should_auto_start_idle {
+        return;
+    }
+
+    let app_state = match app.try_state::<Mutex<AppState>>() {
+        Some(state) => state,
+        None => return,
+    };
+
+    let startup_result = (|| -> Result<(), String> {
+        let state = app_state.lock().map_err(|e| e.to_string())?;
+
+        configure_timer_callback(
+            &state.timer,
+            app.clone(),
+            Arc::clone(config_manager.inner()),
+        );
+
+        if should_resume_persisted {
+            state.timer.resume_persisted_countdown()?;
+        } else {
+            state
+                .timer
+                .set_phase_interval(TimerPhase::Work, config.timer.interval_minutes)?;
+            state.timer.start()?;
+        }
+
+        let mut runtime_state = state.timer.to_runtime_state();
+        if let Ok(cfg) = config_manager.get() {
+            runtime_state.delay_count = cfg.runtime_state.delay_count;
+            runtime_state.delay_quota_date = cfg.runtime_state.delay_quota_date;
+        }
+        drop(state);
+        let _ = config_manager.update(|c| c.runtime_state = runtime_state);
+        Ok(())
+    })();
+
+    if let Ok(state) = app_state.lock() {
+        let runtime = state.timer.get_runtime();
+        let _ = app.emit("timer-update", runtime.clone());
+        update_tray_tooltip(app, &runtime);
+    }
+
+    if let Err(err) = startup_result {
+        eprintln!("启动时自动开始计时失败: {}", err);
     }
 }
 
@@ -74,6 +180,115 @@ impl Default for AppState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn save_runtime_state_with_delay(
+    config_manager: &tauri::State<Arc<ConfigManager>>,
+    runtime_state: config::RuntimeState,
+) -> Result<(), String> {
+    let _ = config::reset_daily_delay_quota_if_needed(config_manager.inner());
+    let mut state_to_save = runtime_state;
+    if let Ok(cfg) = config_manager.get() {
+        state_to_save.delay_count = cfg.runtime_state.delay_count;
+        state_to_save.delay_quota_date = cfg.runtime_state.delay_quota_date;
+    }
+    config::update_runtime_state(config_manager, state_to_save)
+}
+
+fn configure_timer_callback(
+    timer: &TimerEngine,
+    app_handle: tauri::AppHandle,
+    config_manager: Arc<ConfigManager>,
+) {
+    let app_handle_clone = app_handle.clone();
+    timer.set_callback(move |runtime: TimerRuntime| {
+        let _ = config::reset_daily_delay_quota_if_needed(&config_manager);
+        let is_finished = runtime.remaining_seconds == 0 && runtime.state == TimerState::Idle;
+
+        // 发送更新到前端
+        let _ = app_handle_clone.emit("timer-update", &runtime);
+        update_tray_tooltip(&app_handle_clone, &runtime);
+
+        // 休息阶段软强制重锁：用户手动解锁后会被再次锁回，直到休息阶段结束
+        if runtime.state == TimerState::Running && runtime.phase == TimerPhase::Rest {
+            let guard_state = app_handle_clone.state::<RestLockGuardState>();
+            if guard_state.enforce_during_rest.load(Ordering::Relaxed) {
+                let now = unix_now_secs();
+                let last = guard_state.last_relock_unix_secs.load(Ordering::Relaxed);
+                if now.saturating_sub(last) >= REST_RELOCK_INTERVAL_SECS {
+                    system::lock_screen();
+                    guard_state
+                        .last_relock_unix_secs
+                        .store(now, Ordering::Relaxed);
+                }
+            }
+        }
+
+        // 仅工作阶段触发提前通知
+        if runtime.state == TimerState::Running && runtime.phase == TimerPhase::Work {
+            if let Ok(config) = config_manager.get() {
+                let notice_seconds = config.timer.advance_notice_seconds;
+                if notice_seconds > 0 && runtime.remaining_seconds == notice_seconds {
+                    let is_effective = schedule::ScheduleChecker::is_effective(
+                        config.schedule.time_limit_enabled,
+                        &config.schedule.start_time,
+                        &config.schedule.end_time,
+                        config.schedule.weekday_limit_enabled,
+                        &config.schedule.weekdays,
+                        &config.schedule.logic,
+                    );
+
+                    if is_effective {
+                        notifier::Notifier::notify_before_execution(
+                            &app_handle_clone,
+                            &config.action.action_type,
+                            notice_seconds,
+                            config.runtime_state.delay_count,
+                            config.timer.max_delay_times,
+                            config.timer.delay_options.clone(),
+                        );
+                    }
+                }
+            }
+        }
+
+        if !is_finished {
+            return;
+        }
+
+        // 休息阶段结束，通知前端进入下一轮
+        if runtime.phase == TimerPhase::Rest {
+            let _ = app_handle_clone.emit("loop-rest-finished", ());
+            return;
+        }
+
+        // 工作阶段结束，按生效规则执行动作
+        match config_manager.get() {
+            Ok(config) => {
+                let is_effective = schedule::ScheduleChecker::is_effective(
+                    config.schedule.time_limit_enabled,
+                    &config.schedule.start_time,
+                    &config.schedule.end_time,
+                    config.schedule.weekday_limit_enabled,
+                    &config.schedule.weekdays,
+                    &config.schedule.logic,
+                );
+
+                if is_effective {
+                    println!("倒计时结束，执行动作: {}", config.action.action_type);
+                    system::execute_action(&config.action.action_type);
+                } else {
+                    println!("倒计时结束，但不在生效规则内，跳过动作执行");
+                }
+            }
+            Err(err) => {
+                eprintln!("读取配置失败，跳过动作执行: {}", err);
+            }
+        }
+
+        // 发送计时结束事件，前端可决定是否进入下一轮
+        let _ = app_handle_clone.emit("timer-finished", ());
+    });
 }
 
 // ===== Tauri Commands =====
@@ -111,10 +326,11 @@ fn set_timer_interval(
     let app_state = state.lock().map_err(|e| e.to_string())?;
     app_state.timer.set_interval(minutes)?;
 
-    // 保存状态
+    // 持久化主间隔和运行时状态
     let runtime_state = app_state.timer.to_runtime_state();
     drop(app_state);
-    let _ = config::update_runtime_state(&config_manager, runtime_state);
+    config_manager.update(|c| c.timer.interval_minutes = minutes)?;
+    let _ = save_runtime_state_with_delay(&config_manager, runtime_state);
 
     Ok(())
 }
@@ -124,84 +340,29 @@ fn set_timer_interval(
 fn start_timer(
     state: tauri::State<Mutex<AppState>>,
     config_manager: tauri::State<Arc<ConfigManager>>,
+    rest_lock_guard: tauri::State<RestLockGuardState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     activation::ensure_activated(config_manager.inner())?;
+    set_rest_lock_guard(rest_lock_guard.inner(), false);
+    let config = config_manager.get()?;
     let app_state = state.lock().map_err(|e| e.to_string())?;
 
-    // 设置回调，用于向前端发送更新和倒计时结束处理
-    let app_handle_clone = app_handle.clone();
-    let config_manager_for_callback = Arc::clone(config_manager.inner());
-    app_state.timer.set_callback(move |runtime: TimerRuntime| {
-        // 检查是否倒计时结束
-        let is_finished = runtime.remaining_seconds == 0 && runtime.state == TimerState::Idle;
+    // 从空闲态开始时，强制回到工作阶段，使用当前主间隔
+    if app_state.timer.get_runtime().state == TimerState::Idle {
+        app_state
+            .timer
+            .set_phase_interval(TimerPhase::Work, config.timer.interval_minutes)?;
+    }
 
-        // 发送更新到前端
-        let _ = app_handle_clone.emit("timer-update", &runtime);
-        update_tray_tooltip(&app_handle_clone, &runtime);
-
-        if runtime.state == TimerState::Running {
-            if let Ok(config) = config_manager_for_callback.get() {
-                let notice_seconds = config.timer.advance_notice_seconds;
-                if notice_seconds > 0 && runtime.remaining_seconds == notice_seconds {
-                    let is_effective = schedule::ScheduleChecker::is_effective(
-                        config.schedule.time_limit_enabled,
-                        &config.schedule.start_time,
-                        &config.schedule.end_time,
-                        config.schedule.weekday_limit_enabled,
-                        &config.schedule.weekdays,
-                        &config.schedule.logic,
-                    );
-
-                    if is_effective {
-                        notifier::Notifier::notify_before_execution(
-                            &app_handle_clone,
-                            &config.action.action_type,
-                            notice_seconds,
-                            config.runtime_state.delay_count,
-                            config.timer.max_delay_times,
-                            config.timer.delay_options.clone(),
-                        );
-                    }
-                }
-            }
-        }
-
-        // 倒计时结束，按生效规则执行动作并通知前端
-        if is_finished {
-            match config_manager_for_callback.get() {
-                Ok(config) => {
-                    let is_effective = schedule::ScheduleChecker::is_effective(
-                        config.schedule.time_limit_enabled,
-                        &config.schedule.start_time,
-                        &config.schedule.end_time,
-                        config.schedule.weekday_limit_enabled,
-                        &config.schedule.weekdays,
-                        &config.schedule.logic,
-                    );
-
-                    if is_effective {
-                        println!("倒计时结束，执行动作: {}", config.action.action_type);
-                        system::execute_action(&config.action.action_type);
-                    } else {
-                        println!("倒计时结束，但不在生效规则内，跳过动作执行");
-                    }
-                }
-                Err(err) => {
-                    eprintln!("读取配置失败，跳过动作执行: {}", err);
-                }
-            }
-            // 发送计时结束事件，前端可以调用保存状态命令
-            let _ = app_handle_clone.emit("timer-finished", ());
-        }
-    });
+    configure_timer_callback(&app_state.timer, app_handle.clone(), Arc::clone(config_manager.inner()));
 
     app_state.timer.start()?;
 
     // 保存运行状态
     let runtime_state = app_state.timer.to_runtime_state();
     drop(app_state);
-    let _ = config::update_runtime_state(&config_manager, runtime_state);
+    let _ = save_runtime_state_with_delay(&config_manager, runtime_state);
 
     // 立即发送一次状态更新
     let app_state = state.lock().map_err(|e| e.to_string())?;
@@ -217,17 +378,26 @@ fn start_timer(
 fn pause_timer(
     state: tauri::State<Mutex<AppState>>,
     config_manager: tauri::State<Arc<ConfigManager>>,
+    rest_lock_guard: tauri::State<RestLockGuardState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     activation::ensure_activated(config_manager.inner())?;
     let app_state = state.lock().map_err(|e| e.to_string())?;
+    if rest_lock_guard.enforce_during_rest.load(Ordering::Relaxed) {
+        let runtime = app_state.timer.get_runtime();
+        if runtime.phase == TimerPhase::Rest && runtime.state == TimerState::Running {
+            return Err("休息阶段禁止暂停".to_string());
+        }
+    }
     app_state.timer.pause()?;
 
     // 保存暂停状态
+    let _ = config::reset_daily_delay_quota_if_needed(config_manager.inner());
     let mut runtime_state = app_state.timer.to_runtime_state();
     drop(app_state);
     if let Ok(config) = config_manager.get() {
         runtime_state.delay_count = config.runtime_state.delay_count;
+        runtime_state.delay_quota_date = config.runtime_state.delay_quota_date.clone();
     }
     let _ = config::update_runtime_state(&config_manager, runtime_state);
 
@@ -250,79 +420,99 @@ fn resume_timer(
     activation::ensure_activated(config_manager.inner())?;
     let app_state = state.lock().map_err(|e| e.to_string())?;
 
-    // 设置回调
-    let app_handle_clone = app_handle.clone();
-    let config_manager_for_callback = Arc::clone(config_manager.inner());
-    app_state.timer.set_callback(move |runtime: TimerRuntime| {
-        let is_finished = runtime.remaining_seconds == 0 && runtime.state == TimerState::Idle;
-        let _ = app_handle_clone.emit("timer-update", &runtime);
-        update_tray_tooltip(&app_handle_clone, &runtime);
-
-        if runtime.state == TimerState::Running {
-            if let Ok(config) = config_manager_for_callback.get() {
-                let notice_seconds = config.timer.advance_notice_seconds;
-                if notice_seconds > 0 && runtime.remaining_seconds == notice_seconds {
-                    let is_effective = schedule::ScheduleChecker::is_effective(
-                        config.schedule.time_limit_enabled,
-                        &config.schedule.start_time,
-                        &config.schedule.end_time,
-                        config.schedule.weekday_limit_enabled,
-                        &config.schedule.weekdays,
-                        &config.schedule.logic,
-                    );
-
-                    if is_effective {
-                        notifier::Notifier::notify_before_execution(
-                            &app_handle_clone,
-                            &config.action.action_type,
-                            notice_seconds,
-                            config.runtime_state.delay_count,
-                            config.timer.max_delay_times,
-                            config.timer.delay_options.clone(),
-                        );
-                    }
-                }
-            }
-        }
-
-        if is_finished {
-            match config_manager_for_callback.get() {
-                Ok(config) => {
-                    let is_effective = schedule::ScheduleChecker::is_effective(
-                        config.schedule.time_limit_enabled,
-                        &config.schedule.start_time,
-                        &config.schedule.end_time,
-                        config.schedule.weekday_limit_enabled,
-                        &config.schedule.weekdays,
-                        &config.schedule.logic,
-                    );
-
-                    if is_effective {
-                        println!("倒计时结束，执行动作: {}", config.action.action_type);
-                        system::execute_action(&config.action.action_type);
-                    } else {
-                        println!("倒计时结束，但不在生效规则内，跳过动作执行");
-                    }
-                }
-                Err(err) => {
-                    eprintln!("读取配置失败，跳过动作执行: {}", err);
-                }
-            }
-            let _ = app_handle_clone.emit("timer-finished", ());
-        }
-    });
+    configure_timer_callback(&app_state.timer, app_handle.clone(), Arc::clone(config_manager.inner()));
 
     app_state.timer.resume()?;
 
     // 保存运行状态
+    let _ = config::reset_daily_delay_quota_if_needed(config_manager.inner());
     let mut runtime_state = app_state.timer.to_runtime_state();
     drop(app_state);
     if let Ok(config) = config_manager.get() {
         runtime_state.delay_count = config.runtime_state.delay_count;
+        runtime_state.delay_quota_date = config.runtime_state.delay_quota_date.clone();
     }
     let _ = config::update_runtime_state(&config_manager, runtime_state);
 
     // 发送状态更新
+    let app_state = state.lock().map_err(|e| e.to_string())?;
+    let runtime = app_state.timer.get_runtime();
+    let _ = app_handle.emit("timer-update", runtime.clone());
+    update_tray_tooltip(&app_handle, &runtime);
+
+    Ok(())
+}
+
+/// 开始循环休息阶段计时
+#[tauri::command]
+fn start_loop_rest_timer(
+    state: tauri::State<Mutex<AppState>>,
+    config_manager: tauri::State<Arc<ConfigManager>>,
+    rest_lock_guard: tauri::State<RestLockGuardState>,
+    app_handle: tauri::AppHandle,
+    minutes: u64,
+    enforce_lock: bool,
+) -> Result<(), String> {
+    activation::ensure_activated(config_manager.inner())?;
+    if minutes == 0 {
+        return Err("循环间隔必须大于0分钟".to_string());
+    }
+
+    set_rest_lock_guard(rest_lock_guard.inner(), enforce_lock);
+    if enforce_lock {
+        system::lock_screen();
+    }
+
+    let app_state = state.lock().map_err(|e| e.to_string())?;
+    app_state
+        .timer
+        .set_phase_interval(TimerPhase::Rest, minutes)?;
+    configure_timer_callback(&app_state.timer, app_handle.clone(), Arc::clone(config_manager.inner()));
+    app_state.timer.start()?;
+
+    let _ = config::reset_daily_delay_quota_if_needed(config_manager.inner());
+    let mut runtime_state = app_state.timer.to_runtime_state();
+    drop(app_state);
+    if let Ok(config) = config_manager.get() {
+        runtime_state.delay_count = config.runtime_state.delay_count;
+        runtime_state.delay_quota_date = config.runtime_state.delay_quota_date.clone();
+    }
+    let _ = config::update_runtime_state(&config_manager, runtime_state);
+
+    let app_state = state.lock().map_err(|e| e.to_string())?;
+    let runtime = app_state.timer.get_runtime();
+    let _ = app_handle.emit("timer-update", runtime.clone());
+    update_tray_tooltip(&app_handle, &runtime);
+
+    Ok(())
+}
+
+/// 开始下一轮工作阶段计时（使用配置中的主间隔）
+#[tauri::command]
+fn start_work_cycle_timer(
+    state: tauri::State<Mutex<AppState>>,
+    config_manager: tauri::State<Arc<ConfigManager>>,
+    rest_lock_guard: tauri::State<RestLockGuardState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    activation::ensure_activated(config_manager.inner())?;
+    set_rest_lock_guard(rest_lock_guard.inner(), false);
+    let _ = config::reset_daily_delay_quota_if_needed(config_manager.inner());
+    let config = config_manager.get()?;
+
+    let app_state = state.lock().map_err(|e| e.to_string())?;
+    app_state
+        .timer
+        .set_phase_interval(TimerPhase::Work, config.timer.interval_minutes)?;
+    configure_timer_callback(&app_state.timer, app_handle.clone(), Arc::clone(config_manager.inner()));
+    app_state.timer.start()?;
+
+    let mut runtime_state = app_state.timer.to_runtime_state();
+    drop(app_state);
+    runtime_state.delay_count = config.runtime_state.delay_count;
+    runtime_state.delay_quota_date = config.runtime_state.delay_quota_date.clone();
+    let _ = config::update_runtime_state(&config_manager, runtime_state);
+
     let app_state = state.lock().map_err(|e| e.to_string())?;
     let runtime = app_state.timer.get_runtime();
     let _ = app_handle.emit("timer-update", runtime.clone());
@@ -336,15 +526,30 @@ fn resume_timer(
 fn stop_timer(
     state: tauri::State<Mutex<AppState>>,
     config_manager: tauri::State<Arc<ConfigManager>>,
+    rest_lock_guard: tauri::State<RestLockGuardState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     activation::ensure_activated(config_manager.inner())?;
+    let _ = config::reset_daily_delay_quota_if_needed(config_manager.inner());
+    let config = config_manager.get()?;
     let app_state = state.lock().map_err(|e| e.to_string())?;
+    if rest_lock_guard.enforce_during_rest.load(Ordering::Relaxed) {
+        let runtime = app_state.timer.get_runtime();
+        if runtime.phase == TimerPhase::Rest && runtime.state == TimerState::Running {
+            return Err("休息阶段禁止停止".to_string());
+        }
+    }
+    set_rest_lock_guard(rest_lock_guard.inner(), false);
+    app_state
+        .timer
+        .set_phase_interval(TimerPhase::Work, config.timer.interval_minutes)?;
     app_state.timer.stop();
 
     // 保存重置后的状态
-    let runtime_state = app_state.timer.to_runtime_state();
+    let mut runtime_state = app_state.timer.to_runtime_state();
     drop(app_state);
+    runtime_state.delay_count = config.runtime_state.delay_count;
+    runtime_state.delay_quota_date = config.runtime_state.delay_quota_date.clone();
     let _ = config::update_runtime_state(&config_manager, runtime_state);
 
     // 发送状态更新
@@ -392,6 +597,7 @@ fn set_window_topmost(app_handle: tauri::AppHandle, enabled: bool) -> Result<(),
     if let Some(window) = app_handle.get_webview_window("main") {
         window.set_always_on_top(enabled).map_err(|e| e.to_string())?;
         if enabled {
+            let _ = window.unminimize();
             let _ = window.show();
             let _ = window.set_focus();
         }
@@ -408,13 +614,17 @@ fn save_timer_finished_state(
     let app_state = state.lock().map_err(|e| e.to_string())?;
     let runtime = app_state.timer.get_runtime();
 
+    let _ = config::reset_daily_delay_quota_if_needed(config_manager.inner());
+    let cfg = config_manager.get()?;
     // 保存空闲状态
     let runtime_state = crate::config::RuntimeState {
         timer_status: "Idle".to_string(),
         remaining_seconds: runtime.total_seconds,
         total_seconds: runtime.total_seconds,
         last_update: chrono::Local::now().to_rfc3339(),
-        delay_count: 0,
+        delay_count: cfg.runtime_state.delay_count,
+        delay_quota_date: cfg.runtime_state.delay_quota_date,
+        cycle_phase: "Work".to_string(),
     };
     drop(app_state);
     config::update_runtime_state(&config_manager, runtime_state)
@@ -433,6 +643,7 @@ pub fn run(safe_mode: bool) {
         .manage(Mutex::new(app_state))
         .manage(Arc::clone(&config_manager))
         .manage(runtime_flags)
+        .manage(RestLockGuardState::default())
         .invoke_handler(tauri::generate_handler![
             get_timer_runtime,
             get_timer_engine_config,
@@ -440,6 +651,8 @@ pub fn run(safe_mode: bool) {
             start_timer,
             pause_timer,
             resume_timer,
+            start_loop_rest_timer,
+            start_work_cycle_timer,
             stop_timer,
             get_formatted_time,
             save_timer_finished_state,
@@ -457,8 +670,10 @@ pub fn run(safe_mode: bool) {
             startup::is_auto_start_enabled,
             startup::set_auto_start,
             logger::get_log_directory,
+            logger::open_log_file,
             activation::get_activation_status,
             activation::activate_with_code,
+            #[cfg(feature = "activation-admin")]
             activation::generate_activation_codes,
             security::get_security_status,
             security::setup_password,
@@ -543,7 +758,11 @@ pub fn run(safe_mode: bool) {
                             let _ = app.emit("tray-quick-set", 60u64);
                         }
                         "about" => {
-                            println!("TimerApp v0.1.0 - 一款简单的Windows定时器工具");
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                            let _ = app.emit("show-about", ());
                         }
                         "quit" => {
                             let flags = app.state::<RuntimeFlags>();
@@ -591,6 +810,9 @@ pub fn run(safe_mode: bool) {
                     let _ = window_clone.hide();
                 }
             });
+
+            let app_handle = app.app_handle().clone();
+            apply_startup_behavior(&app_handle);
 
             Ok(())
         })

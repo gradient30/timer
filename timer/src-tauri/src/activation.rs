@@ -6,7 +6,7 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -15,17 +15,13 @@ const PAYLOAD_LEN: usize = 5;
 const SIGNATURE_LEN: usize = 5;
 const TOTAL_LEN: usize = PAYLOAD_LEN + SIGNATURE_LEN;
 
-const ACTIVATION_SECRET: [u8; 32] = [
-    0x4a, 0x62, 0x1f, 0x8b, 0x77, 0x13, 0x9d, 0x2c,
-    0x55, 0xa1, 0x3e, 0x9a, 0x0d, 0x6c, 0x4f, 0x88,
-    0x91, 0x2d, 0x6a, 0x70, 0x2f, 0x5c, 0x19, 0x3b,
-    0x5d, 0x4e, 0x8f, 0x7c, 0x3a, 0x10, 0x2b, 0x6e,
-];
-const GENERATOR_PASSWORD: &str = "imdepndc";
+static ACTIVATION_SECRET: OnceLock<[u8; 32]> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 pub struct ActivationStatus {
     pub activated: bool,
+    #[serde(rename = "admin_enabled")]
+    pub admin_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,6 +30,24 @@ pub struct ActivationResult {
     pub message: String,
 }
 
+fn activation_secret_bytes() -> [u8; 32] {
+    *ACTIVATION_SECRET.get_or_init(|| {
+        let secret_hex = env!("TIMER_ACTIVATION_SECRET_HEX");
+        let bytes = hex::decode(secret_hex).expect("invalid TIMER_ACTIVATION_SECRET_HEX");
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&bytes);
+        out
+    })
+}
+
+#[cfg(feature = "activation-admin")]
+fn generator_password() -> &'static str {
+    env!("TIMER_GENERATOR_PASSWORD")
+}
+
+pub fn is_activation_admin_enabled() -> bool {
+    cfg!(feature = "activation-admin")
+}
 
 fn normalize_code(code: &str) -> String {
     code.replace('-', "").trim().to_uppercase()
@@ -49,7 +63,7 @@ fn format_code(raw: &str) -> String {
 }
 
 fn compute_signature(payload: &[u8; PAYLOAD_LEN]) -> [u8; SIGNATURE_LEN] {
-    let mut mac = HmacSha256::new_from_slice(&ACTIVATION_SECRET)
+    let mut mac = HmacSha256::new_from_slice(&activation_secret_bytes())
         .expect("HMAC key length is valid");
     mac.update(payload);
     let result = mac.finalize().into_bytes();
@@ -114,6 +128,7 @@ pub fn get_activation_status(
     let config = config_manager.get()?;
     Ok(ActivationStatus {
         activated: config.activation.activated,
+        admin_enabled: is_activation_admin_enabled(),
     })
 }
 
@@ -162,9 +177,10 @@ pub fn generate_activation_code() -> String {
     format_code(&raw)
 }
 
+#[cfg(feature = "activation-admin")]
 #[tauri::command]
 pub fn generate_activation_codes(password: String) -> Result<Vec<String>, String> {
-    if password != GENERATOR_PASSWORD {
+    if password != generator_password() {
         return Err("口令错误".to_string());
     }
 

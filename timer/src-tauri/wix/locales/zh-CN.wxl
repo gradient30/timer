@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WixLocalization xmlns="http://schemas.microsoft.com/wix/2006/localization" Culture="zh-CN">
+  <!-- Tauri required strings -->
+  <String Id="LaunchApp">立即启动 TimerApp</String>
+  <String Id="DowngradeErrorMessage">检测到已安装更新版本的 [ProductName]，安装程序将退出。</String>
+  <String Id="PathEnvVarFeature">将安装目录添加到 PATH（重启终端后生效）</String>
+  <String Id="InstallAppFeature">安装 [ProductName] 应用程序</String>
+
+  <!-- Common Wix UI strings overrides -->
+  <String Id="WelcomeDlgTitle">欢迎使用 [ProductName] 安装向导</String>
+  <String Id="WelcomeDlgDescription">本向导将在您的计算机上安装 [ProductName]。单击“下一步”继续，或单击“取消”退出安装向导。</String>
+  <String Id="InstallDirDlgTitle">选择安装目录</String>
+  <String Id="InstallDirDlgDescription">请选择 [ProductName] 的安装位置。</String>
+  <String Id="VerifyReadyDlgTitle">准备安装</String>
+  <String Id="VerifyReadyDlgDescription">安装程序已准备好安装 [ProductName]。</String>
+  <String Id="ProgressDlgTitle">正在安装 [ProductName]</String>
+  <String Id="ProgressDlgDescription">请稍候，正在安装 [ProductName]。</String>
+  <String Id="ExitDialogTitle">已完成 [ProductName] 安装</String>
+  <String Id="ExitDialogDescription">[ProductName] 已成功安装到您的计算机。</String>
+</WixLocalization>

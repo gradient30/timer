@@ -10,6 +10,13 @@ pub enum TimerState {
     Paused,
 }
 
+/// 计时阶段
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TimerPhase {
+    Work,
+    Rest,
+}
+
 impl std::fmt::Display for TimerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -44,6 +51,7 @@ impl Default for TimerConfig {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TimerRuntime {
     pub state: TimerState,
+    pub phase: TimerPhase,
     pub remaining_seconds: u64,
     pub total_seconds: u64,
     pub last_update: Option<String>,
@@ -56,6 +64,7 @@ impl Default for TimerRuntime {
         let total = 30 * 60; // 默认30分钟
         Self {
             state: TimerState::Idle,
+            phase: TimerPhase::Work,
             remaining_seconds: total,
             total_seconds: total,
             last_update: None,
@@ -88,30 +97,74 @@ impl TimerEngine {
 
     /// 从保存的运行时状态恢复定时器
     pub fn from_runtime_state(saved_state: &crate::config::RuntimeState) -> Self {
+        Self::from_runtime_state_with_interval(saved_state, saved_state.total_seconds / 60)
+    }
+
+    /// 从保存的运行时状态恢复，并指定主间隔（分钟）
+    pub fn from_runtime_state_with_interval(
+        saved_state: &crate::config::RuntimeState,
+        interval_minutes: u64,
+    ) -> Self {
         let config = TimerConfig {
-            interval_minutes: saved_state.total_seconds / 60,
+            interval_minutes: interval_minutes.max(1),
             custom_interval: true,
             min_interval: 1,
             max_interval: 1440,
         };
 
-        // 解析状态
-        let state = match saved_state.timer_status.as_str() {
-            "Running" => TimerState::Running,
-            "Paused" => TimerState::Paused,
-            _ => TimerState::Idle,
+        let phase = match saved_state.cycle_phase.as_str() {
+            "Rest" => TimerPhase::Rest,
+            _ => TimerPhase::Work,
+        };
+
+        let (state, remaining_seconds) = match saved_state.timer_status.as_str() {
+            "Running" => {
+                let remaining = crate::config::offline_adjusted_remaining(saved_state);
+                if remaining == 0 {
+                    (TimerState::Idle, saved_state.total_seconds)
+                } else {
+                    (TimerState::Running, remaining)
+                }
+            }
+            "Paused" => (TimerState::Paused, saved_state.remaining_seconds),
+            _ => (TimerState::Idle, saved_state.total_seconds),
         };
 
         Self {
             runtime: Arc::new(Mutex::new(TimerRuntime {
                 state,
-                remaining_seconds: saved_state.remaining_seconds,
+                phase,
+                remaining_seconds,
                 total_seconds: saved_state.total_seconds,
                 last_update: Some(saved_state.last_update.clone()),
             })),
             config: Arc::new(Mutex::new(config)),
             callback: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// 从配置中的主间隔创建空闲态计时器
+    pub fn from_interval_minutes(interval_minutes: u64) -> Self {
+        let engine = Self::new();
+        let _ = engine.set_interval(interval_minutes.max(1));
+        engine
+    }
+
+    /// 恢复持久化的倒计时并启动后台线程（用于重启/开机后）
+    pub fn resume_persisted_countdown(&self) -> Result<(), String> {
+        let mut runtime = self.runtime.lock().unwrap();
+        match runtime.state {
+            TimerState::Running | TimerState::Paused => {
+                runtime.state = TimerState::Running;
+                runtime.last_update = Some(chrono::Local::now().to_rfc3339());
+            }
+            TimerState::Idle => {
+                return Err("计时器未处于可恢复状态".to_string());
+            }
+        }
+        drop(runtime);
+        self.spawn_timer_thread();
+        Ok(())
     }
 
     /// 获取当前的运行时状态（用于保存）
@@ -127,6 +180,11 @@ impl TimerEngine {
             total_seconds: rt.total_seconds,
             last_update: rt.last_update.clone().unwrap_or_else(|| chrono::Local::now().to_rfc3339()),
             delay_count: 0,
+            delay_quota_date: crate::config::default_delay_quota_date(),
+            cycle_phase: match rt.phase {
+                TimerPhase::Work => "Work".to_string(),
+                TimerPhase::Rest => "Rest".to_string(),
+            },
         }
     }
 
@@ -168,7 +226,23 @@ impl TimerEngine {
         runtime.total_seconds = minutes * 60;
         runtime.remaining_seconds = runtime.total_seconds;
         runtime.state = TimerState::Idle;
+        runtime.phase = TimerPhase::Work;
 
+        Ok(())
+    }
+
+    /// 设置当前阶段及时间间隔（分钟）
+    pub fn set_phase_interval(&self, phase: TimerPhase, minutes: u64) -> Result<(), String> {
+        if minutes == 0 {
+            return Err("时间间隔必须大于0分钟".to_string());
+        }
+
+        let mut runtime = self.runtime.lock().unwrap();
+        runtime.phase = phase;
+        runtime.total_seconds = minutes * 60;
+        runtime.remaining_seconds = runtime.total_seconds;
+        runtime.state = TimerState::Idle;
+        runtime.last_update = Some(chrono::Local::now().to_rfc3339());
         Ok(())
     }
 
@@ -233,6 +307,7 @@ impl TimerEngine {
         let mut runtime = self.runtime.lock().unwrap();
         runtime.state = TimerState::Idle;
         runtime.remaining_seconds = runtime.total_seconds;
+        runtime.phase = TimerPhase::Work;
         runtime.last_update = Some(chrono::Local::now().to_rfc3339());
     }
 
@@ -334,5 +409,15 @@ mod tests {
         assert!(engine.set_interval(45).is_ok());
         assert!(engine.set_interval(0).is_err());
         assert!(engine.set_interval(2000).is_err());
+    }
+
+    #[test]
+    fn test_set_phase_interval() {
+        let engine = TimerEngine::new();
+        assert!(engine.set_phase_interval(TimerPhase::Rest, 5).is_ok());
+        let rt = engine.get_runtime();
+        assert_eq!(rt.phase, TimerPhase::Rest);
+        assert_eq!(rt.total_seconds, 300);
+        assert!(engine.set_phase_interval(TimerPhase::Work, 0).is_err());
     }
 }
