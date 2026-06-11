@@ -27,3 +27,10 @@ Thumbs.db
 git-sync-to-tcloud.sh
 git_init_tcloud.sh
 scripts/local/
+
+# ===== 同步/传输临时文件 =====
+last_sync_id
+*.bundle
+
+# 根目录误生成的 npm 锁文件（package.json 在 timer/）
+/package-lock.json

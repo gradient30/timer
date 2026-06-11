@@ -26,6 +26,9 @@
     "start_minimized": false,
     "start_timer_automatically": false
   },
+  "ui": {
+    "theme": "dark"
+  },
   "log": {
     "level": "info",
     "max_days": 7,

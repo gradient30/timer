@@ -95,9 +95,22 @@ run_build() {
     print_success "Build completed"
 }
 
+run_icons() {
+    require_cmd python
+    require_cmd npm
+    print_info "Generating clock app icon assets..."
+    python "$PROJECT_ROOT/scripts/generate-app-icon.py"
+    (
+        cd "$TIMER_DIR"
+        npx tauri icon src-tauri/icons/app-icon.png -o src-tauri/icons
+    )
+    print_success "Icon assets updated"
+}
+
 run_release() {
     require_cmd npm
     ensure_local_activation_env
+    run_icons
     print_info "Building public release package (no activation-admin)..."
     (
         cd "$TIMER_DIR"
@@ -188,7 +201,8 @@ Commands:
   test                 Run cargo test
   clean                Remove timer/dist and timer/src-tauri/target
   docs                 Open docs directory
-  release              Build Tauri release package
+  icons                Regenerate clock icon assets (icon.ico / tray / MSI)
+  release              Build Tauri release package (runs icons first)
   activation [count]   Generate offline activation codes (default: 1)
   setup-config         Create config/local/activation.env from public template
   help                 Show this help
@@ -209,6 +223,7 @@ main() {
         test) run_test ;;
         clean) run_clean ;;
         docs) run_docs ;;
+        icons) run_icons ;;
         release) run_release ;;
         activation) run_activation "${2:-1}" ;;
         setup-config) run_setup_config ;;

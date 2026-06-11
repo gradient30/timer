@@ -45,14 +45,19 @@ cd timer && npm install
 ./scripts/dev.sh dev
 ```
 
+开发服务器默认端口 `1422`（见 `timer/src-tauri/tauri.conf.json`）。
+
 ## 常用命令
 
 ```bash
 ./scripts/dev.sh dev          # 开发模式
 ./scripts/dev.sh check        # 代码检查
+./scripts/dev.sh icons        # 重新生成时钟图标
 ./scripts/dev.sh release      # 构建公开发布 MSI
-./scripts/dev.sh activation 5 # 生成激活码
+./scripts/dev.sh activation 5 # 生成激活码（与 release 同密钥即可用于对应 MSI）
 ```
+
+命令说明见 [scripts/README.md](scripts/README.md)。
 
 ## 文档
 
@@ -60,17 +65,18 @@ cd timer && npm install
 |------|------|
 | [docs/release/CONFIGURATION.md](docs/release/CONFIGURATION.md) | 配置与构建密钥 |
 | [docs/release/RELEASE.md](docs/release/RELEASE.md) | 发布流程 |
-| [docs/activation/USAGE.md](docs/activation/USAGE.md) | 激活码 |
+| [docs/activation/USAGE.md](docs/activation/USAGE.md) | 激活码生成与使用 |
 | [config/README.md](config/README.md) | 配置目录 |
 
 ## 目录结构
 
 ```
-├── config/public/     # 公开配置模板
-├── docs/              # 使用与发布文档
-│   └── assets/        # README 展示截图
-├── scripts/dev.sh     # 开发/构建脚本
-└── timer/             # Tauri 应用源码
+├── config/public/       # 公开配置模板
+├── config/local/        # 本地构建密钥（gitignore）
+├── docs/                # 使用与发布文档
+│   └── assets/          # README 展示截图
+├── scripts/dev.sh       # 开发/构建/发码脚本
+└── timer/               # Tauri 应用（前端 + src-tauri）
 ```
 
 ## License

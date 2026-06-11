@@ -1,41 +1,39 @@
-# TimerApp 配置目录
+# 配置目录
 
-本目录将**可公开的配置模板**与**本地私密配置**分离，便于发布到 GitHub 公共资源。
+将**可公开模板**与**本地私密配置**分离，便于开源发布。
 
-## 目录结构
+## 结构
 
 ```
 config/
-├── README.md                 # 本说明
-├── public/                   # 可提交：示例与文档模板
+├── public/                   # 可提交
 │   ├── activation.env.example
 │   └── config.example.json
-└── local/                    # 禁止提交：仅本机开发/发布构建使用
-    └── activation.env        # 构建时密钥（gitignore）
+└── local/                    # 禁止提交
+    └── activation.env        # 构建密钥（HMAC + 生成器口令）
 ```
 
-## 快速开始（本地开发）
-
-1. 复制激活密钥模板：
+## 快速开始
 
 ```bash
-cp config/public/activation.env.example config/local/activation.env
-```
-
-2. 编辑 `config/local/activation.env`，填入你自己的随机密钥与口令。
-
-3. 使用开发脚本启动（默认启用 `activation-admin` 功能）：
-
-```bash
+./scripts/dev.sh setup-config
+# 编辑 config/local/activation.env
 ./scripts/dev.sh dev
 ```
 
-## 配置分层说明
+`activation.env` 中 `TIMER_ACTIVATION_SECRET_HEX` 同时用于：
 
-| 层级 | 路径 | 是否提交 | 用途 |
+- `./scripts/dev.sh release` 编译进 MSI
+- `./scripts/dev.sh activation` 生成可验码
+
+二者密钥须一致；修改后须重新打 MSI 并重新发码。
+
+## 分层说明
+
+| 层级 | 路径 | 提交 Git | 用途 |
 |------|------|----------|------|
-| 构建密钥 | `config/local/activation.env` | 否 | 编译期注入 HMAC 密钥与生成器口令 |
-| 应用运行时配置 | `%APPDATA%/TimerApp/config.json` | 否 | 用户计时、密码、激活状态等 |
-| 公开模板 | `config/public/*` | 是 | 文档与首次安装参考 |
+| 构建密钥 | `config/local/activation.env` | 否 | 编译期注入 |
+| 运行时配置 | `%APPDATA%/TimerApp/config.json` | 否 | 用户数据 |
+| 公开模板 | `config/public/*` | 是 | 文档与首次参考 |
 
-详细说明见 [docs/release/CONFIGURATION.md](../docs/release/CONFIGURATION.md)。
+详见 [docs/release/CONFIGURATION.md](../docs/release/CONFIGURATION.md)。
