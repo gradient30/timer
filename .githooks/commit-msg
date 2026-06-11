@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# 阻止 Cursor 自动追加的 co-author 进入提交历史
+# 安装：git config core.hooksPath .githooks
+
+set -euo pipefail
+
+MSG_FILE="$1"
+TMP_FILE="${MSG_FILE}.tmp"
+
+grep -Ev '^Co-[Aa]uthored-by: Cursor <cursoragent@cursor\.com>$' "$MSG_FILE" > "$TMP_FILE"
+mv "$TMP_FILE" "$MSG_FILE"

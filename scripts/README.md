@@ -16,6 +16,7 @@
 | `release` | 公开发布 MSI（先执行 `icons`，不含 `activation-admin`） |
 | `activation [count]` | CLI 生成离线激活码，默认 1 个 |
 | `setup-config` | 从模板创建 `config/local/activation.env` |
+| `setup-hooks` | 启用 `.githooks`，提交时自动剔除 Cursor co-author |
 | `help` | 显示帮助 |
 
 ## 示例

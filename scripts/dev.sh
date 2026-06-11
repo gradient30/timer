@@ -148,6 +148,18 @@ run_setup_config() {
     print_info "Public templates live in: $PROJECT_ROOT/config/public/"
 }
 
+run_setup_hooks() {
+    local hooks_path="$PROJECT_ROOT/.githooks"
+    if [[ ! -f "$hooks_path/commit-msg" ]]; then
+        print_error "Missing hook: $hooks_path/commit-msg"
+        exit 1
+    fi
+    chmod +x "$hooks_path/commit-msg" 2>/dev/null || true
+    git -C "$PROJECT_ROOT" config core.hooksPath .githooks
+    print_success "Git hooks enabled: core.hooksPath=.githooks"
+    print_info "commit-msg hook will strip Cursor co-author trailers"
+}
+
 run_clean() {
     print_info "Cleaning build artifacts..."
 
@@ -205,6 +217,7 @@ Commands:
   release              Build Tauri release package (runs icons first)
   activation [count]   Generate offline activation codes (default: 1)
   setup-config         Create config/local/activation.env from public template
+  setup-hooks          Enable .githooks (strip Cursor co-author on commit)
   help                 Show this help
 
 Examples:
@@ -227,6 +240,7 @@ main() {
         release) run_release ;;
         activation) run_activation "${2:-1}" ;;
         setup-config) run_setup_config ;;
+        setup-hooks) run_setup_hooks ;;
         help|--help|-h) show_help ;;
         *)
             print_error "Unknown command: $cmd"
