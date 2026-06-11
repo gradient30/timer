@@ -18,13 +18,13 @@ export function getNextTheme(theme: AppTheme): AppTheme {
 export function getThemeToggleLabel(theme: AppTheme): string {
   const next = getNextTheme(theme);
   if (next === "light") return "明";
-  if (next === "vivid") return "艳";
+  if (next === "vivid") return "彩";
   return "暗";
 }
 
 export function getThemeToggleTitle(theme: AppTheme): string {
   const next = getNextTheme(theme);
   if (next === "light") return "切换为明亮风格";
-  if (next === "vivid") return "切换为鲜艳欢快风格";
+  if (next === "vivid") return "切换为彩色风格";
   return "切换为深色风格";
 }

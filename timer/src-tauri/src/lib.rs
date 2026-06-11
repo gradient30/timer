@@ -857,17 +857,29 @@ pub fn run(safe_mode: bool) {
             let window_clone = window.clone();
             let app_handle_for_close = app.app_handle().clone();
             window.on_window_event(move |event| {
-                if let WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    if let (Some(cm), Some(st)) = (
-                        app_handle_for_close.try_state::<Arc<ConfigManager>>(),
-                        app_handle_for_close.try_state::<Mutex<AppState>>(),
-                    ) {
-                        if let Ok(state) = st.lock() {
-                            let _ = persist_timer_runtime(cm.inner(), &state.timer);
+                match event {
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        if let (Some(cm), Some(st)) = (
+                            app_handle_for_close.try_state::<Arc<ConfigManager>>(),
+                            app_handle_for_close.try_state::<Mutex<AppState>>(),
+                        ) {
+                            if let Ok(state) = st.lock() {
+                                let _ = persist_timer_runtime(cm.inner(), &state.timer);
+                            }
+                        }
+                        let _ = window_clone.hide();
+                    }
+                    WindowEvent::Focused(true) => {
+                        if let Some(st) = app_handle_for_close.try_state::<Mutex<AppState>>() {
+                            if let Ok(state) = st.lock() {
+                                let runtime = state.timer.get_runtime();
+                                let _ = app_handle_for_close.emit("timer-update", &runtime);
+                                update_tray_tooltip(&app_handle_for_close, &runtime);
+                            }
                         }
                     }
-                    let _ = window_clone.hide();
+                    _ => {}
                 }
             });
 

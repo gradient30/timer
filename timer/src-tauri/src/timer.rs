@@ -60,6 +60,14 @@ pub struct TimerRuntime {
 
 type TimerCallback = Arc<Mutex<Option<Box<dyn Fn(TimerRuntime) + Send + 'static>>>>;
 
+struct ThreadActiveGuard(Arc<AtomicBool>);
+
+impl Drop for ThreadActiveGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 impl Default for TimerRuntime {
     fn default() -> Self {
         let total = 30 * 60; // 默认30分钟
@@ -167,6 +175,7 @@ impl TimerEngine {
             }
         }
         drop(runtime);
+        self.prepare_timer_thread_spawn();
         self.spawn_timer_thread();
         Ok(())
     }
@@ -279,7 +288,7 @@ impl TimerEngine {
         runtime.last_update = Some(chrono::Local::now().to_rfc3339());
         drop(runtime);
 
-        // 启动后台线程
+        self.prepare_timer_thread_spawn();
         self.spawn_timer_thread();
 
         Ok(())
@@ -311,7 +320,7 @@ impl TimerEngine {
         runtime.last_update = Some(chrono::Local::now().to_rfc3339());
         drop(runtime);
 
-        // 重新启动后台线程
+        self.prepare_timer_thread_spawn();
         self.spawn_timer_thread();
 
         Ok(())
@@ -340,6 +349,11 @@ impl TimerEngine {
         Ok(())
     }
 
+    /// 清除可能残留的线程活跃标记（上次线程自然结束时未复位）
+    fn prepare_timer_thread_spawn(&self) {
+        self.thread_active.store(false, Ordering::SeqCst);
+    }
+
     /// 启动后台计时线程
     fn spawn_timer_thread(&self) {
         if self.thread_active.swap(true, Ordering::SeqCst) {
@@ -351,6 +365,7 @@ impl TimerEngine {
         let thread_active = Arc::clone(&self.thread_active);
 
         thread::spawn(move || {
+            let _guard = ThreadActiveGuard(thread_active);
             let mut last_tick = Instant::now();
 
             loop {
@@ -360,7 +375,6 @@ impl TimerEngine {
 
                 // 检查是否应该停止线程
                 if rt.state != TimerState::Running {
-                    thread_active.store(false, Ordering::SeqCst);
                     break;
                 }
 
@@ -449,5 +463,29 @@ mod tests {
         assert_eq!(rt.phase, TimerPhase::Rest);
         assert_eq!(rt.total_seconds, 300);
         assert!(engine.set_phase_interval(TimerPhase::Work, 0).is_err());
+    }
+
+    #[test]
+    fn test_restart_after_stale_thread_active_flag() {
+        let engine = TimerEngine::new();
+        engine.set_phase_interval(TimerPhase::Work, 1).unwrap();
+
+        // 模拟上一轮计时结束后 thread_active 未复位的场景
+        engine.thread_active.store(true, Ordering::SeqCst);
+
+        engine.start().unwrap();
+        assert!(engine.is_thread_active());
+
+        thread::sleep(Duration::from_millis(1300));
+        let rt = engine.get_runtime();
+        assert!(
+            rt.remaining_seconds < 60,
+            "expected countdown to tick, got {}",
+            rt.remaining_seconds
+        );
+
+        engine.stop();
+        thread::sleep(Duration::from_millis(200));
+        assert!(!engine.is_thread_active());
     }
 }
