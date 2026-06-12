@@ -56,45 +56,49 @@ timer/src-tauri/target/release/bundle/msi/TimerApp_0.1.0_x64_zh-CN.msi
 
 仅更新图标时可先执行 `./scripts/dev.sh icons`，再 `release`。
 
-### GitHub Actions 模板
+### GitHub Actions（已落地）
 
-```yaml
-name: Release
-on:
-  push:
-    tags: ['v*']
+| 工作流 | 文件 | 触发 | 说明 |
+|--------|------|------|------|
+| CI | `.github/workflows/ci.yml` | `main` push/PR | `npm build` + `dev.sh check/test` + release-parity（无 `activation-admin`） |
+| Release | `.github/workflows/release.yml` | tag `v*` | `dev.sh release` 构建 MSI 并上传 GitHub Release |
 
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
+CI 与 Release **共用同名 Secrets**，但用途不同：
 
-      - name: Install dependencies
-        working-directory: timer
-        run: npm ci
+- **CI**：未配置 Secrets 时自动使用 `config/public/activation.env.example` 占位值，仅用于编译/测试。
+- **Release**：**必须**配置正式发行密钥，与本地 MSI 发码一致。
 
-      - name: Build MSI
-        env:
-          TIMER_ACTIVATION_SECRET_HEX: ${{ secrets.TIMER_ACTIVATION_SECRET_HEX }}
-          TIMER_GENERATOR_PASSWORD: ${{ secrets.TIMER_GENERATOR_PASSWORD }}
-        run: |
-          cd ..
-          bash ./scripts/dev.sh release
-```
+### 配置 Repository Secrets
+
+在 GitHub 仓库 **Settings → Secrets and variables → Actions** 添加：
+
+| Secret | 用途 |
+|--------|------|
+| `TIMER_ACTIVATION_SECRET_HEX` | 64 位十六进制发行密钥（Release 必填；CI 可选） |
+| `TIMER_GENERATOR_PASSWORD` | 编译期口令（Release 必填；CI 可选） |
+
+> 正式发布请使用**独立**发行密钥，勿与开发环境混用。详见 [CONFIGURATION.md](./CONFIGURATION.md#github-actions-secrets)。
+
+### 分支保护（推荐）
+
+在 **Settings → Branches → Branch protection rules** 为 `main` 启用：
+
+- [ ] Require a pull request before merging
+- [ ] Require status checks to pass：**CI / check**、**CI / release-parity**
+- [ ] Require branches to be up to date before merging
 
 ## 四、创建 GitHub Release
 
+**手动：**
+
 ```bash
 git tag v0.1.0
-git push origin v0.1.0
+git push github v0.1.0   # 或你的 GitHub remote 名称
 ```
 
-上传 MSI，注明：Windows 10/11 x64、激活方式、变更说明。
+推送 `v*` 标签后，`release.yml` 自动构建 MSI 并创建 Release（`softprops/action-gh-release`）。
+
+**手动上传（备用）：** 从 Actions 产物或本地 `target/release/bundle/msi/` 下载 MSI，注明 Windows 10/11 x64、激活方式、变更说明。
 
 ## 五、发布后
 

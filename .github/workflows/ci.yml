@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+    env:
+      TIMER_ACTIVATION_SECRET_HEX: ${{ secrets.TIMER_ACTIVATION_SECRET_HEX }}
+      TIMER_GENERATOR_PASSWORD: ${{ secrets.TIMER_GENERATOR_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: timer/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: timer/src-tauri
+
+      - name: Configure build secrets
+        shell: bash
+        run: bash ./.github/scripts/setup-ci-env.sh
+
+      - name: Install frontend dependencies
+        working-directory: timer
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: timer
+        run: npm run build
+
+      - name: Rust check and clippy (dev features)
+        shell: bash
+        run: ./scripts/dev.sh check
+
+      - name: Rust tests
+        shell: bash
+        run: ./scripts/dev.sh test
+
+  release-parity:
+    runs-on: windows-latest
+    env:
+      TIMER_ACTIVATION_SECRET_HEX: ${{ secrets.TIMER_ACTIVATION_SECRET_HEX }}
+      TIMER_GENERATOR_PASSWORD: ${{ secrets.TIMER_GENERATOR_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: timer/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: timer/src-tauri
+
+      - name: Configure build secrets
+        shell: bash
+        run: bash ./.github/scripts/setup-ci-env.sh
+
+      - name: Install frontend dependencies
+        working-directory: timer
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: timer
+        run: npm run build
+
+      - name: Rust check (release profile, no activation-admin)
+        working-directory: timer/src-tauri
+        run: cargo check
+
+      - name: Rust clippy (release profile, no activation-admin)
+        working-directory: timer/src-tauri
+        run: cargo clippy -- -D warnings

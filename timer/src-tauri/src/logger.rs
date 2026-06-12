@@ -92,7 +92,7 @@ fn cleanup_old_logs(log_dir: &PathBuf) -> Result<(), String> {
     }
 
     // 按修改时间排序（最旧的在前面）
-    log_files.sort_by(|a, b| a.1.cmp(&b.1));
+    log_files.sort_by_key(|a| a.1);
 
     // 删除超过7天的日志
     let now = std::time::SystemTime::now();

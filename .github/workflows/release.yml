@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      TIMER_ACTIVATION_SECRET_HEX: ${{ secrets.TIMER_ACTIVATION_SECRET_HEX }}
+      TIMER_GENERATOR_PASSWORD: ${{ secrets.TIMER_GENERATOR_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify release secrets
+        shell: bash
+        run: |
+          if [ -z "${TIMER_ACTIVATION_SECRET_HEX}" ] || [ -z "${TIMER_GENERATOR_PASSWORD}" ]; then
+            echo "::error::Missing release secrets. Configure TIMER_ACTIVATION_SECRET_HEX and TIMER_GENERATOR_PASSWORD in repository secrets."
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: timer/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: timer/src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: timer
+        run: npm ci
+
+      - name: Build MSI
+        shell: bash
+        run: ./scripts/dev.sh release
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TimerApp-msi
+          path: timer/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: timer/src-tauri/target/release/bundle/msi/*.msi
+          generate_release_notes: true

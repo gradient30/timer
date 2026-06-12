@@ -39,17 +39,29 @@
 openssl rand -hex 32
 ```
 
-### CI 发布
+### CI 与 Release 密钥策略
 
-构建前导出同名环境变量（或确保 `config/local/activation.env` 由 CI 写入）：
+| 场景 | 密钥来源 | 说明 |
+|------|----------|------|
+| 本地开发 | `config/local/activation.env` | `dev.sh setup-config` 初始化 |
+| CI（check/test） | Secrets **或** 公开模板占位 | `.github/scripts/setup-ci-env.sh` 自动回退 |
+| Release（MSI） | **必须** Repository Secrets | 与 CLI 发码同一发行密钥 |
 
-```yaml
-env:
-  TIMER_ACTIVATION_SECRET_HEX: ${{ secrets.TIMER_ACTIVATION_SECRET_HEX }}
-  TIMER_GENERATOR_PASSWORD: ${{ secrets.TIMER_GENERATOR_PASSWORD }}
-```
+> 公开发布请使用**独立**发行密钥；客户端离线密钥无法绝对防逆向。
 
-> 公开发布请使用独立发行密钥；客户端离线密钥无法绝对防逆向。
+### GitHub Actions Secrets
+
+在仓库 **Settings → Secrets and variables → Actions** 配置：
+
+| Secret | CI | Release | 说明 |
+|--------|:--:|:-------:|------|
+| `TIMER_ACTIVATION_SECRET_HEX` | 可选 | **必填** | 64 位十六进制 |
+| `TIMER_GENERATOR_PASSWORD` | 可选 | **必填** | 编译期口令 |
+
+- **未配置 CI Secrets**：工作流使用 `config/public/activation.env.example` 中的占位值，足以通过 `cargo check/clippy/test`。
+- **Release 工作流**：缺少任一 Secret 将直接失败，避免误发占位密钥包。
+
+工作流文件：`.github/workflows/ci.yml`、`.github/workflows/release.yml`。
 
 ## 三、开发 vs 发布构建
 
