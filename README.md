@@ -7,16 +7,16 @@ Windows 定时提醒与系统动作工具。到点后自动锁屏或关机，支
 ## 界面预览
 
 <p align="center">
-  <img src="docs/assets/screenshot-main.png" alt="TimerApp 主界面：倒计时、预设时间与进度条" width="720" />
+  <img src="docs/assets/screenshot-main.png" alt="TimerApp 主界面 v2：圆环倒计时、预设时长与底栏快捷入口" width="420" />
 </p>
 
-<p align="center"><em>主界面 — 倒计时显示、快速预设、自定义时长与进度追踪</em></p>
+<p align="center"><em>主界面 — 圆环倒计时、快捷预设、步进器微调与底栏主题/帮助/配置入口</em></p>
 
 <p align="center">
-  <img src="docs/assets/screenshot-settings.png" alt="TimerApp 设置面板：执行动作与生效规则" width="720" />
+  <img src="docs/assets/screenshot-settings.png" alt="TimerApp 系统设置弹窗：侧栏 Tab 与基础配置" width="420" />
 </p>
 
-<p align="center"><em>设置面板 — 执行动作、时间段/星期规则、提前通知与循环模式</em></p>
+<p align="center"><em>系统设置 — 侧栏式弹窗：基础配置、生效规则、循环与提示</em></p>
 
 ## 功能
 
