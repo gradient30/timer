@@ -210,6 +210,155 @@ run_activation() {
     cargo run --bin activation_gen --manifest-path "$MANIFEST_PATH" -- "$count"
 }
 
+get_package_version() {
+    grep -m1 '^version = ' "$MANIFEST_PATH" | sed -E 's/^version = "(.*)"/\1/'
+}
+
+normalize_release_version() {
+    local raw="${1:-}"
+    raw="${raw#v}"
+    raw="${raw#V}"
+    printf '%s' "$raw"
+}
+
+validate_release_version() {
+    local version="$1"
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        print_error "Version must be semver like 0.1.1 (got: $version)"
+        exit 1
+    fi
+}
+
+bump_version_files() {
+    local new_version="$1"
+    local old_version="$2"
+    local tauri_conf="$SRC_TAURI_DIR/tauri.conf.json"
+    local index_html="$TIMER_DIR/index.html"
+
+    print_info "Bumping version: ${old_version} -> ${new_version}"
+
+    sed -i.bak "s/^version = \".*\"/version = \"${new_version}\"/" "$MANIFEST_PATH"
+    rm -f "${MANIFEST_PATH}.bak"
+
+    sed -i.bak "s/\"version\": \"${old_version}\"/\"version\": \"${new_version}\"/" "$tauri_conf"
+    rm -f "${tauri_conf}.bak"
+
+    sed -i.bak "s/BUILD ${old_version}/BUILD ${new_version}/" "$index_html"
+    sed -i.bak "s/版本 ${old_version}/版本 ${new_version}/" "$index_html"
+    rm -f "${index_html}.bak"
+
+    require_cmd npm
+    (
+        cd "$TIMER_DIR"
+        npm version "$new_version" --no-git-tag-version --allow-same-version >/dev/null
+    )
+
+    print_success "Version files updated"
+}
+
+print_github_release_steps() {
+    local version="$1"
+    cat <<EOF
+
+${GREEN}下一步：GitHub 手动发布${NC}
+  1. 确认 GitHub main 已包含本次提交（tcloud 同步完成后）
+  2. 打开 Releases 新建页：
+     https://github.com/gradient30/timer/releases/new
+  3. Tag: v${version}（Create new tag）
+     Target: main
+     Release title: TimerApp v${version}
+     Release label: None（正式版）/ Pre-release（内测）
+  4. Publish 后等待 Actions「Release」完成，在 Release 页或 Artifacts 下载 MSI
+     预期文件名: TimerApp_${version}_x64_zh-CN.msi
+  5. 发激活码: ./scripts/dev.sh activation [count]
+
+EOF
+}
+
+run_prepare_release() {
+    require_cmd git
+    local new_version_raw="${1:-}"
+    shift || true
+
+    local do_check=false
+    local do_commit=false
+    local do_sync=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --check) do_check=true ;;
+            --commit) do_commit=true ;;
+            --sync) do_sync=true ;;
+            *)
+                print_error "Unknown option: $1"
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    if [[ -z "$new_version_raw" ]]; then
+        print_error "Usage: ./scripts/dev.sh prepare-release <version> [--check] [--commit] [--sync]"
+        exit 1
+    fi
+
+    if [[ "$do_sync" == true ]]; then
+        do_commit=true
+    fi
+
+    local new_version
+    new_version="$(normalize_release_version "$new_version_raw")"
+    validate_release_version "$new_version"
+
+    local old_version
+    old_version="$(get_package_version)"
+    if [[ "$old_version" == "$new_version" ]]; then
+        print_warning "Version already ${new_version}; continuing to refresh lockfile if needed"
+    fi
+
+    if ! git -C "$PROJECT_ROOT" diff --quiet -- \
+        "$MANIFEST_PATH" \
+        "$SRC_TAURI_DIR/tauri.conf.json" \
+        "$TIMER_DIR/package.json" \
+        "$TIMER_DIR/package-lock.json" \
+        "$TIMER_DIR/index.html" 2>/dev/null; then
+        print_error "Version files have uncommitted changes. Commit or stash them first."
+        exit 1
+    fi
+
+    bump_version_files "$new_version" "$old_version"
+
+    if [[ "$do_check" == true ]]; then
+        run_check
+    fi
+
+    if [[ "$do_commit" == true ]]; then
+        git -C "$PROJECT_ROOT" add \
+            "$MANIFEST_PATH" \
+            "$SRC_TAURI_DIR/tauri.conf.json" \
+            "$TIMER_DIR/package.json" \
+            "$TIMER_DIR/package-lock.json" \
+            "$TIMER_DIR/index.html"
+        git -C "$PROJECT_ROOT" commit -m "chore(release): 升级版本至 ${new_version}"
+        print_success "Committed version bump"
+    else
+        print_warning "Version bumped but not committed. Use --commit or commit manually."
+    fi
+
+    if [[ "$do_sync" == true ]]; then
+        local sync_script="$PROJECT_ROOT/git-sync-to-tcloud.sh"
+        if [[ ! -f "$sync_script" ]]; then
+            print_error "Missing sync script: $sync_script"
+            exit 1
+        fi
+        print_info "Syncing main to tcloud via bundle..."
+        bash "$sync_script"
+        print_success "Bundle sync triggered"
+    fi
+
+    print_github_release_steps "$new_version"
+}
+
 show_help() {
     cat <<EOF
 TimerApp project management script
@@ -226,6 +375,8 @@ Commands:
   docs                 Open docs directory
   icons                Regenerate clock icon assets (icon.ico / tray / MSI)
   release              Build Tauri release package (runs icons first)
+  prepare-release <ver> [--check] [--commit] [--sync]
+                       Bump version files; optional check/commit/tcloud sync
   activation [count]   Generate offline activation codes (default: 1)
   setup-config         Create config/local/activation.env from public template
   setup-hooks          Enable .githooks (strip Cursor co-author on commit)
@@ -235,6 +386,7 @@ Examples:
   ./scripts/dev.sh dev
   ./scripts/dev.sh check
   ./scripts/dev.sh activation 10
+  ./scripts/dev.sh prepare-release 0.1.1 --commit --sync
 EOF
 }
 
@@ -249,6 +401,7 @@ main() {
         docs) run_docs ;;
         icons) run_icons ;;
         release) run_release ;;
+        prepare-release) run_prepare_release "${2:-}" "${@:3}" ;;
         activation) run_activation "${2:-1}" ;;
         setup-config) run_setup_config ;;
         setup-hooks) run_setup_hooks ;;

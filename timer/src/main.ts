@@ -5,7 +5,6 @@ import { showSystemAlert, showSystemConfirm, showSystemWarning } from "./system-
 import {
   applyTheme,
   getNextTheme,
-  getThemeToggleLabel,
   getThemeToggleTitle,
   normalizeTheme,
   type AppTheme,
@@ -18,12 +17,18 @@ const progressFill = document.getElementById("progress-fill") as HTMLDivElement;
 const progressRunner = document.getElementById("progress-runner") as HTMLDivElement;
 const progressBarWrap = document.querySelector(".progress-bar-wrap") as HTMLElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
+const statusDot = document.getElementById("status-dot") as HTMLSpanElement;
+const modeDisplay = document.getElementById("mode-display") as HTMLSpanElement;
+const actionPreviewIcon = document.getElementById("action-preview-icon") as HTMLSpanElement;
+const timerRing = document.getElementById("timer-ring") as HTMLDivElement;
 const timerDisplayContainer = document.querySelector(".timer-display") as HTMLElement;
 
 const btnStart = document.getElementById("btn-start") as HTMLButtonElement;
 const btnPause = document.getElementById("btn-pause") as HTMLButtonElement;
 const btnStop = document.getElementById("btn-stop") as HTMLButtonElement;
 const btnSetCustom = document.getElementById("btn-set-custom") as HTMLButtonElement;
+const btnStepMinus = document.getElementById("btn-step-minus") as HTMLButtonElement;
+const btnStepPlus = document.getElementById("btn-step-plus") as HTMLButtonElement;
 const customMinutes = document.getElementById("custom-minutes") as HTMLInputElement;
 
 const noticeModal = document.getElementById("notice-modal") as HTMLDivElement;
@@ -33,7 +38,7 @@ const noticeCountdown = document.getElementById("notice-countdown") as HTMLSpanE
 const noticeDelayOptions = document.getElementById("notice-delay-options") as HTMLDivElement;
 const btnNoticeExecute = document.getElementById("btn-notice-execute") as HTMLButtonElement;
 const btnNoticeCancel = document.getElementById("btn-notice-cancel") as HTMLButtonElement;
-const trayHint = document.getElementById("tray-hint") as HTMLSpanElement;
+const trayHint = document.getElementById("tray-hint") as HTMLButtonElement;
 
 const activationModal = document.getElementById("activation-modal") as HTMLDivElement;
 const activationCodeInput = document.getElementById("activation-code") as HTMLInputElement;
@@ -132,6 +137,37 @@ function actionTypeDisplay(actionType: string): string {
   return actionType === "shutdown" ? "关机" : "锁屏";
 }
 
+function actionTypeIcon(actionType: string): string {
+  return actionType === "shutdown" ? "🔌" : "🔒";
+}
+
+function renderModeDisplay() {
+  if (!modeDisplay) return;
+  modeDisplay.textContent = loopEnabled ? "模式：循环番茄钟" : "模式：常规单次";
+}
+
+function renderActionPreview(actionType: string, message?: string) {
+  if (actionPreviewIcon) {
+    actionPreviewIcon.textContent = actionTypeIcon(actionType);
+  }
+  if (!timerStatus) return;
+  timerStatus.textContent = message ?? `即将执行：${actionTypeDisplay(actionType)}`;
+}
+
+function updateStatusDot(state: string) {
+  if (!statusDot) return;
+  statusDot.classList.remove("is-running", "is-paused", "is-idle");
+  if (state === "Running") {
+    statusDot.classList.add("is-running");
+    return;
+  }
+  if (state === "Paused") {
+    statusDot.classList.add("is-paused");
+    return;
+  }
+  statusDot.classList.add("is-idle");
+}
+
 function renderTimerLabel(runtime: any) {
   if (!timerStatus) return;
 
@@ -139,25 +175,28 @@ function renderTimerLabel(runtime: any) {
 
   if (runtime.state === "Running") {
     if ((runtime.phase || "Work") === "Rest") {
-      timerStatus.textContent = `休息中，${formatLockCountdown(runtime.remaining_seconds)}后开始自动循环事件`;
+      renderActionPreview("lock", `休息中，${formatLockCountdown(runtime.remaining_seconds)}后进入下一轮`);
       return;
     }
     if (!isScheduleEffective) {
-      timerStatus.textContent = "当前不在生效周期（到点不执行）";
+      renderActionPreview(currentActionType, "当前不在生效周期（到点不执行）");
       timerStatus.classList.add("warning");
       return;
     }
-    timerStatus.textContent = `${formatTime(runtime.remaining_seconds)}后执行：${actionTypeDisplay(currentActionType)}`;
+    renderActionPreview(
+      currentActionType,
+      `${formatTime(runtime.remaining_seconds)}后执行：${actionTypeDisplay(currentActionType)}`
+    );
     return;
   }
 
   if (loopPausedBySchedule && !isScheduleEffective) {
-    timerStatus.textContent = "当前不在生效周期（自动循环已暂停）";
+    renderActionPreview(currentActionType, "当前不在生效周期（自动循环已暂停）");
     timerStatus.classList.add("warning");
     return;
   }
 
-  timerStatus.textContent = stateMap[runtime.state] || runtime.state;
+  renderActionPreview(currentActionType);
 }
 
 // 更新UI
@@ -175,13 +214,18 @@ function updateUI(runtime: any) {
   if (progressBarWrap) {
     progressBarWrap.style.setProperty("--progress-pos", `${progress}%`);
   }
+  if (timerRing) {
+    timerRing.style.setProperty("--ring-progress", `${progress}`);
+  }
   if (progressRunner) {
     progressRunner.classList.toggle("is-running", runtime.state === "Running");
   }
 
-  // 更新圆环内提示
+  // 更新圆环内提示与顶栏状态
   renderTimerLabel(runtime);
   renderStatusText(runtime.state);
+  updateStatusDot(runtime.state);
+  renderModeDisplay();
 
   if (timerDisplayContainer) {
     timerDisplayContainer.classList.toggle("is-running", runtime.state === "Running");
@@ -197,7 +241,15 @@ function renderStatusText(state: string) {
     return;
   }
   statusOverride = null;
-  statusText.textContent = `SYS · ${stateMap[state] || state}`;
+  if (state === "Running") {
+    statusText.textContent = "计时进行中";
+    return;
+  }
+  if (state === "Paused") {
+    statusText.textContent = "计时已暂停";
+    return;
+  }
+  statusText.textContent = stateMap[state] || state;
 }
 
 function formatLockCountdown(seconds: number) {
@@ -222,7 +274,7 @@ function highlightPresetMinutes(minutes: number) {
 
 function showPendingIntervalHint(minutes: number) {
   statusOverride = {
-    message: `SYS · 已选 ${minutes} 分钟，点击「设置」后生效`,
+    message: `已选 ${minutes} 分钟，确认后生效`,
     expiresAt: Date.now() + 5000,
   };
   renderStatusText(currentState);
@@ -315,6 +367,8 @@ async function refreshActionType() {
     loopEnabled = config.timer?.loop_enabled ?? true;
     loopIntervalMinutes = config.timer?.loop_interval_minutes ?? 5;
     enforceRelockDuringRest = config.timer?.enforce_relock_during_rest ?? true;
+    renderModeDisplay();
+    renderActionPreview(currentActionType);
     if (latestRuntime) {
       renderTimerLabel(latestRuntime);
     }
@@ -596,7 +650,9 @@ async function maybeStartNextWorkCycle() {
   }
 }
 
-trayHint?.addEventListener("click", () => {
+trayHint?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
   if (!activationStatus.admin_enabled) {
     return;
   }
@@ -702,6 +758,8 @@ async function syncIntervalFromConfig() {
     loopIntervalMinutes = config.timer?.loop_interval_minutes ?? 5;
     enforceRelockDuringRest = config.timer?.enforce_relock_during_rest ?? true;
     currentActionType = normalizeActionType(config.action?.action_type);
+    renderModeDisplay();
+    renderActionPreview(currentActionType);
   } catch (e) {
     console.error("同步配置间隔失败:", e);
   }
@@ -795,14 +853,45 @@ document.querySelectorAll(".btn-quick").forEach((btn) => {
   });
 });
 
-// 自定义设置：显式确认后才生效
-btnSetCustom.addEventListener("click", async () => {
+async function applyCustomMinutesFromUI() {
   const minutes = parseInt(customMinutes.value, 10);
   try {
     await applyTimerInterval(minutes);
   } catch (err) {
     await showSystemWarning("设置失败: " + err);
   }
+}
+
+// 自定义设置：显式确认后才生效（步进器在非计时状态立即应用）
+btnSetCustom.addEventListener("click", () => {
+  void applyCustomMinutesFromUI();
+});
+
+customMinutes?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    void applyCustomMinutesFromUI();
+  }
+});
+
+async function adjustCustomMinutes(delta: number) {
+  const current = parseInt(customMinutes.value, 10);
+  const base = Number.isFinite(current) ? current : 30;
+  const next = Math.min(1440, Math.max(1, base + delta));
+  customMinutes.value = String(next);
+  highlightPresetMinutes(next);
+  if (isTimerActive()) {
+    showPendingIntervalHint(next);
+    return;
+  }
+  await applyCustomMinutesFromUI();
+}
+
+btnStepMinus?.addEventListener("click", () => {
+  void adjustCustomMinutes(-1);
+});
+
+btnStepPlus?.addEventListener("click", () => {
+  void adjustCustomMinutes(1);
 });
 
 // 监听托盘事件
@@ -933,7 +1022,7 @@ function updateThemeToggleButton(theme: AppTheme) {
   if (!btnThemeToggle) {
     return;
   }
-  btnThemeToggle.textContent = getThemeToggleLabel(theme);
+  btnThemeToggle.textContent = "🎨";
   btnThemeToggle.title = getThemeToggleTitle(theme);
 }
 
@@ -965,17 +1054,40 @@ async function toggleTheme() {
   await persistTheme(nextTheme);
 }
 
-btnThemeToggle?.addEventListener("click", () => {
+btnThemeToggle?.addEventListener("click", (event) => {
+  event.stopPropagation();
   void toggleTheme();
+});
+
+const settingsTabButtons = document.querySelectorAll("[data-settings-tab]") as NodeListOf<HTMLButtonElement>;
+
+function switchSettingsTab(tabId: string) {
+  settingsTabButtons.forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.settingsTab === tabId);
+  });
+  document.querySelectorAll("[data-settings-panel]").forEach((panel) => {
+    panel.classList.toggle("is-active", panel.getAttribute("data-settings-panel") === tabId);
+  });
+}
+
+settingsTabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const tabId = button.dataset.settingsTab;
+    if (tabId) {
+      switchSettingsTab(tabId);
+    }
+  });
 });
 
 // 打开设置面板
 btnSettings?.addEventListener("click", async () => {
   settingsPanel.classList.remove("hidden");
+  switchSettingsTab("basic");
   await loadSettings();
 });
 
-btnHelp?.addEventListener("click", () => {
+btnHelp?.addEventListener("click", (event) => {
+  event.stopPropagation();
   helpModal?.classList.remove("hidden");
 });
 
@@ -1138,6 +1250,12 @@ btnCloseSettings?.addEventListener("click", () => {
   settingsPanel.classList.add("hidden");
 });
 
+settingsPanel?.addEventListener("click", (event) => {
+  if (event.target === settingsPanel) {
+    settingsPanel.classList.add("hidden");
+  }
+});
+
 // 时间段限制开关
 timeLimitEnabled?.addEventListener("change", () => {
   if (timeLimitEnabled.checked) {
@@ -1163,32 +1281,15 @@ function updateLoopIntervalControls() {
   } else {
     loopIntervalContainer?.classList.remove("active");
   }
-
-  if (loopIntervalPreset?.value === "custom") {
-    loopIntervalCustom?.classList.remove("hidden-input");
-  } else {
-    loopIntervalCustom?.classList.add("hidden-input");
-    loopIntervalCustom.value = loopIntervalPreset?.value || "5";
-  }
+  renderModeDisplay();
 }
 
 function applyLoopIntervalValue(minutes: number) {
-  const presets = new Set([5, 10, 15]);
-  if (presets.has(minutes)) {
-    loopIntervalPreset.value = minutes.toString();
-    loopIntervalCustom.value = minutes.toString();
-    loopIntervalCustom.classList.add("hidden-input");
-    return;
-  }
   loopIntervalPreset.value = "custom";
-  loopIntervalCustom.classList.remove("hidden-input");
   loopIntervalCustom.value = minutes.toString();
 }
 
 function resolveLoopIntervalMinutesFromUI(): number {
-  if (loopIntervalPreset.value !== "custom") {
-    return parseInt(loopIntervalPreset.value, 10);
-  }
   return parseInt(loopIntervalCustom.value, 10);
 }
 
@@ -1196,7 +1297,16 @@ executionModeOptions?.forEach((option) => {
   option.addEventListener("change", updateLoopIntervalControls);
 });
 
-loopIntervalPreset?.addEventListener("change", updateLoopIntervalControls);
+document.querySelectorAll("input[name=\"action\"]").forEach((input) => {
+  input.addEventListener("change", () => {
+    const selected = (document.querySelector("input[name=\"action\"]:checked") as HTMLInputElement)?.value || "lock";
+    currentActionType = normalizeActionType(selected);
+    renderActionPreview(currentActionType);
+    if (latestRuntime) {
+      renderTimerLabel(latestRuntime);
+    }
+  });
+});
 
 // 加载设置
 async function loadSettings() {
@@ -1261,6 +1371,8 @@ async function loadSettings() {
     if (enforceRelockToggle) {
       enforceRelockToggle.checked = enforceRelockDuringRest;
     }
+    renderModeDisplay();
+    renderActionPreview(currentActionType);
   } catch (e) {
     console.error("加载设置失败:", e);
   }
@@ -1337,6 +1449,9 @@ btnSaveSettings?.addEventListener("click", async () => {
     loopEnabled = nextLoopEnabled;
     loopIntervalMinutes = nextLoopInterval;
     enforceRelockDuringRest = nextEnforceRelock;
+    currentActionType = actionType;
+    renderModeDisplay();
+    renderActionPreview(currentActionType);
 
     // 保存开机自启
     await invoke("set_auto_start", { enabled: autoStart.checked });

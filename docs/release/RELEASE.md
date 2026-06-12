@@ -80,6 +80,15 @@ PR 合并到 `main` 后再次触发 CI。双远程同步时，可按需 `git pus
 
 **1. 同步版本号**（见下文「二、版本号同步」）
 
+一键升版本 + 提交 + 同步 tcloud（GitHub 网页创建 Release 仍需手动）：
+
+```bash
+./scripts/dev.sh prepare-release 0.1.1 --commit --sync
+# 可选先跑检查：加 --check
+```
+
+脚本会更新 `Cargo.toml`、`tauri.conf.json`、`package.json`、`package-lock.json`、`index.html`，并打印 GitHub 发布 checklist。
+
 **2. 本地冒烟（可选但推荐）**
 
 ```bash

@@ -203,8 +203,8 @@ body {
 /* ── App shell ── */
 .app {
   font-family: var(--font-ui);
-  width: 520px;
-  height: 680px;
+  width: 420px;
+  height: 720px;
   background: var(--bg-void);
   color: var(--text-primary);
   display: flex;
@@ -999,10 +999,16 @@ body {
   color: var(--text-muted);
 }
 
-.action-options {
+.option-row {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  flex-direction: row;
+  gap: 8px;
+}
+
+.option-row .radio-label {
+  flex: 1;
+  justify-content: center;
+  padding: 9px 10px;
 }
 
 .radio-label {
@@ -1017,9 +1023,19 @@ body {
   transition: all 0.15s;
 }
 
+.radio-label:has(input:checked) {
+  border-color: var(--accent-cyan);
+  background: rgba(0, 212, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(0, 212, 255, 0.15);
+}
+
 .radio-label:hover {
   border-color: var(--border-bright);
   background: rgba(0, 212, 255, 0.04);
+}
+
+.radio-label:has(input:checked):hover {
+  background: rgba(0, 212, 255, 0.14);
 }
 
 .radio-label input[type="radio"] {
@@ -1130,14 +1146,8 @@ body {
   color: var(--text-primary);
 }
 
-.execution-mode {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
 .loop-interval {
-  margin: 10px 0 0 16px;
+  margin: 10px 0 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1152,8 +1162,7 @@ body {
   pointer-events: auto;
 }
 
-.loop-interval label,
-.loop-hint {
+.loop-interval label {
   font-size: 12px;
   color: var(--text-muted);
 }

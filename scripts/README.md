@@ -14,6 +14,7 @@
 | `docs` | 打开 `docs/` 目录 |
 | `icons` | 重新生成时钟图标（`icon.ico`、托盘、MSI；需 Python + `scripts/requirements.txt`） |
 | `release` | 公开发布 MSI（先执行 `icons`，不含 `activation-admin`） |
+| `prepare-release <ver> [--check] [--commit] [--sync]` | 升级版本号；可选检查、提交、tcloud bundle 同步，并提示 GitHub 手动发布步骤 |
 | `activation [count]` | CLI 生成离线激活码，默认 1 个 |
 | `setup-config` | 从模板创建 `config/local/activation.env` |
 | `setup-hooks` | 启用 `.githooks`，提交时自动剔除 Cursor co-author |
@@ -27,6 +28,20 @@
 ./scripts/dev.sh icons          # 仅更新图标资源
 ./scripts/dev.sh release        # 输出 MSI 安装包
 ./scripts/dev.sh activation 10  # 生成 10 个激活码
+./scripts/dev.sh prepare-release 0.1.1 --commit --sync  # 发版前：升版本 + 提交 + 同步 tcloud
+```
+
+### 发版一条龙（GitHub 手动 Release）
+
+```bash
+# 1. 升版本、提交、同步到 tcloud（GitHub 网页发布仍需手动）
+./scripts/dev.sh prepare-release 0.1.1 --commit --sync
+
+# 2. 等 tcloud → GitHub main 更新后，在 GitHub 创建 Release：
+#    Tag v0.1.1 / Title TimerApp v0.1.1 / Target main
+
+# 3. Actions 完成后发码
+./scripts/dev.sh activation 10
 ```
 
 ## 开发 vs 发布
