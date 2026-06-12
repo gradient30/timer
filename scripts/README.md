@@ -12,7 +12,7 @@
 | `test` | `cargo test` |
 | `clean` | 清理 `timer/dist` 与 `timer/src-tauri/target` |
 | `docs` | 打开 `docs/` 目录 |
-| `icons` | 重新生成时钟图标（`icon.ico`、托盘、MSI） |
+| `icons` | 重新生成时钟图标（`icon.ico`、托盘、MSI；需 Python + `scripts/requirements.txt`） |
 | `release` | 公开发布 MSI（先执行 `icons`，不含 `activation-admin`） |
 | `activation [count]` | CLI 生成离线激活码，默认 1 个 |
 | `setup-config` | 从模板创建 `config/local/activation.env` |

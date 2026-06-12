@@ -112,7 +112,7 @@ git push github v0.1.0
 |------|------|
 | CI 编译报 `TIMER_ACTIVATION_SECRET_HEX` 格式错误 | 检查 Secret 是否为 64 位十六进制 |
 | Release 第一步即失败 | 未配置 Release Secrets，在仓库 Settings 补全 |
-| `dev.sh release` 本地成功、Actions 失败 | 确认 Actions 已装 Python 3.11（`icons` 步骤）；查看日志中 `cargo`/`npm` 具体错误 |
+| `dev.sh release` 本地成功、Actions 失败 | 查看日志：`icons` 需 Python 3.11 + `pip install -r scripts/requirements.txt`（Pillow）；或 `cargo`/`npm` 具体错误 |
 | 激活码无法用于 MSI | MSI 与发码密钥不一致；更换密钥后须重新 `release` 并重发码 |
 
 密钥与环境变量详解见 [CONFIGURATION.md](./CONFIGURATION.md#github-actions-secrets)。

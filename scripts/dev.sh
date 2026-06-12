@@ -95,9 +95,20 @@ run_build() {
     print_success "Build completed"
 }
 
+ensure_python_icon_deps() {
+    local req="$SCRIPT_DIR/requirements.txt"
+    if [[ ! -f "$req" ]]; then
+        print_error "Missing Python requirements: $req"
+        exit 1
+    fi
+    print_info "Ensuring Python icon dependencies..."
+    python -m pip install -q -r "$req"
+}
+
 run_icons() {
     require_cmd python
     require_cmd npm
+    ensure_python_icon_deps
     print_info "Generating clock app icon assets..."
     python "$PROJECT_ROOT/scripts/generate-app-icon.py"
     (

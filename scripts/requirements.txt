@@ -1,0 +1,2 @@
+# generate-app-icon.py
+Pillow>=10.4.0,<12
