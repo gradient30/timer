@@ -59,12 +59,24 @@ cd timer && npm install
 
 命令说明见 [scripts/README.md](scripts/README.md)。
 
+## CI/CD
+
+推送 `main` 或开 PR 时，GitHub Actions 自动执行与本地等价的检查：
+
+- **check**：`npm build` + `dev.sh check` + `dev.sh test`（含 `activation-admin`）
+- **release-parity**：无 `activation-admin` 的 `cargo check/clippy`
+
+推送 `v*` 标签自动构建 MSI 并创建 [GitHub Release](https://github.com/gradient30/timer/releases)。
+
+**首次启用**：配置 `github` 远程 → 推送 `main` →（Release 前）在仓库 Settings 配置 Secrets。  
+完整步骤见 [docs/release/RELEASE.md#零github-actions-操作步骤](docs/release/RELEASE.md#零github-actions-操作步骤)。
+
 ## 文档
 
 | 文档 | 说明 |
 |------|------|
+| [docs/release/RELEASE.md](docs/release/RELEASE.md) | 发布流程与 **CI/CD 操作步骤** |
 | [docs/release/CONFIGURATION.md](docs/release/CONFIGURATION.md) | 配置与构建密钥 |
-| [docs/release/RELEASE.md](docs/release/RELEASE.md) | 发布流程 |
 | [docs/activation/USAGE.md](docs/activation/USAGE.md) | 激活码生成与使用 |
 | [config/README.md](config/README.md) | 配置目录 |
 

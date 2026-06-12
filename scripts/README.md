@@ -39,3 +39,16 @@
 **激活码与发布包：** `activation` 与 `release` 均通过 `build.rs` 读取同一份 `config/local/activation.env`。只要 `TIMER_ACTIVATION_SECRET_HEX` 未变，CLI 生成的激活码可用于对应 MSI；修改密钥后须重新 `release` 并重新发码。
 
 构建密钥见 [docs/release/CONFIGURATION.md](../docs/release/CONFIGURATION.md)。
+
+## 与 GitHub Actions 的对应关系
+
+| 本地命令 | CI job | 说明 |
+|----------|--------|------|
+| `npm run build`（在 `timer/`） | `check`、`release-parity` | 前端 TypeScript + Vite 构建 |
+| `dev.sh check` | `check` | `activation-admin` + clippy `-D warnings` |
+| `dev.sh test` | `check` | `cargo test`（20 项单元测试） |
+| `cargo check` / `clippy`（无 features） | `release-parity` | 与 `release` 相同的 Cargo feature 集 |
+| `dev.sh release` | Release `build` | 需 GitHub Secrets；含 `icons` + MSI |
+
+CI 在未配置 Secrets 时使用公开模板占位值；Release 工作流强制要求正式发行密钥。  
+操作步骤见 [docs/release/RELEASE.md](../docs/release/RELEASE.md#零github-actions-操作步骤)。

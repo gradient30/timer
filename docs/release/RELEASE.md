@@ -1,6 +1,123 @@
 # TimerApp 发布流程
 
-GitHub 公开发布检查清单。
+GitHub 公开发布检查清单与 CI/CD 操作指南。
+
+## 零、GitHub Actions 操作步骤
+
+### 分阶段交付审核
+
+| 阶段 | 目标 | 交付物 | 审核结论 |
+|------|------|--------|----------|
+| **1 — CI** | `main` push/PR 自动检查 | `.github/workflows/ci.yml`、`.github/scripts/setup-ci-env.sh` | **通过**：`npm build` → `dev.sh check` → `dev.sh test`；Secrets 可选（无则占位编译） |
+| **2 — Release** | tag `v*` 自动构建 MSI 并发布 | `.github/workflows/release.yml` | **通过**：强制 Release Secrets → `dev.sh release` → 上传 Artifact + GitHub Release |
+| **3 — 优化** | 缓存、发布 parity、分支保护 | `ci.yml` 中 `release-parity` job + 本文档 | **通过**：npm/Rust 缓存；无 `activation-admin` 的 `cargo check/clippy`；分支保护说明已文档化 |
+
+本地等价验收（推送前建议执行）：
+
+```bash
+./scripts/dev.sh check
+./scripts/dev.sh test
+cd timer && npm run build
+cd timer/src-tauri && cargo check && cargo clippy -- -D warnings
+```
+
+### 首次启用（一次性）
+
+**1. 配置 GitHub 远程**
+
+本仓库默认 `origin` 指向私有同步源（tcloud）；公开发布使用 `github` 远程：
+
+```bash
+# 若尚未添加
+git remote add github https://github.com/gradient30/timer.git
+git remote -v
+```
+
+**2. 推送工作流到 GitHub**
+
+```bash
+git push github main
+```
+
+推送后在 [Actions](https://github.com/gradient30/timer/actions) 确认 **CI / check** 与 **CI / release-parity** 均为绿色。
+
+**3. 配置 Repository Secrets**
+
+路径：**Settings → Secrets and variables → Actions → New repository secret**
+
+| Secret | CI | Release | 值来源 |
+|--------|:--:|:-------:|--------|
+| `TIMER_ACTIVATION_SECRET_HEX` | 可选 | **必填** | 发行专用 64 位十六进制（`openssl rand -hex 32`） |
+| `TIMER_GENERATOR_PASSWORD` | 可选 | **必填** | 任意强口令（编译期注入，release 包无应用内入口） |
+
+- **仅跑 CI**：可不配置，工作流自动使用 `config/public/activation.env.example` 占位值。
+- **正式发布**：必须使用**独立发行密钥**（勿与 `config/local/` 开发密钥混用）；与本地 `dev.sh activation` 发码保持一致。
+
+**4. （推荐）启用 `main` 分支保护**
+
+**Settings → Branches → Add rule**，勾选：
+
+- Require a pull request before merging
+- Require status checks：**CI / check**、**CI / release-parity**
+- Require branches to be up to date before merging
+
+### 日常开发
+
+```bash
+# 本地验证（与 CI job「check」一致）
+./scripts/dev.sh check
+./scripts/dev.sh test
+cd timer && npm run build
+
+git checkout -b feature/xxx
+# ... 修改代码 ...
+git push github feature/xxx   # 开 PR，自动触发 CI
+```
+
+PR 合并到 `main` 后再次触发 CI。双远程同步时，可按需 `git push origin main` 同步到 tcloud。
+
+### 正式发布（GitHub Release）
+
+**1. 同步版本号**（见下文「二、版本号同步」）
+
+**2. 本地冒烟（可选但推荐）**
+
+```bash
+./scripts/dev.sh release
+# 安装 MSI，验证激活、托盘、计时
+./scripts/dev.sh activation 3   # 用发行密钥生成的码验活
+```
+
+**3. 打标签并推送**
+
+```bash
+git tag v0.1.0
+git push github v0.1.0
+```
+
+`release.yml` 将自动：构建 MSI → 上传 Actions Artifact（`TimerApp-msi`）→ 创建 GitHub Release 并附上 MSI。
+
+也可在 Actions 页手动 **Run workflow**（`workflow_dispatch`）做试构建；**无 tag 时不会创建 GitHub Release**，仅产出 Artifact。
+
+**4. 发激活码**
+
+```bash
+# 本地 config/local/activation.env 须与 GitHub Release Secrets 使用同一发行密钥
+./scripts/dev.sh activation 10
+```
+
+### 故障排查
+
+| 现象 | 处理 |
+|------|------|
+| CI 编译报 `TIMER_ACTIVATION_SECRET_HEX` 格式错误 | 检查 Secret 是否为 64 位十六进制 |
+| Release 第一步即失败 | 未配置 Release Secrets，在仓库 Settings 补全 |
+| `dev.sh release` 本地成功、Actions 失败 | 确认 Actions 已装 Python 3.11（`icons` 步骤）；查看日志中 `cargo`/`npm` 具体错误 |
+| 激活码无法用于 MSI | MSI 与发码密钥不一致；更换密钥后须重新 `release` 并重发码 |
+
+密钥与环境变量详解见 [CONFIGURATION.md](./CONFIGURATION.md#github-actions-secrets)。
+
+---
 
 ## 一、发布前检查
 
@@ -56,49 +173,20 @@ timer/src-tauri/target/release/bundle/msi/TimerApp_0.1.0_x64_zh-CN.msi
 
 仅更新图标时可先执行 `./scripts/dev.sh icons`，再 `release`。
 
-### GitHub Actions（已落地）
+> **CI/CD 自动化**已落地，完整操作见上文 [零、GitHub Actions 操作步骤](#零github-actions-操作步骤)。
 
-| 工作流 | 文件 | 触发 | 说明 |
-|--------|------|------|------|
-| CI | `.github/workflows/ci.yml` | `main` push/PR | `npm build` + `dev.sh check/test` + release-parity（无 `activation-admin`） |
-| Release | `.github/workflows/release.yml` | tag `v*` | `dev.sh release` 构建 MSI 并上传 GitHub Release |
+### 工作流一览
 
-CI 与 Release **共用同名 Secrets**，但用途不同：
-
-- **CI**：未配置 Secrets 时自动使用 `config/public/activation.env.example` 占位值，仅用于编译/测试。
-- **Release**：**必须**配置正式发行密钥，与本地 MSI 发码一致。
-
-### 配置 Repository Secrets
-
-在 GitHub 仓库 **Settings → Secrets and variables → Actions** 添加：
-
-| Secret | 用途 |
-|--------|------|
-| `TIMER_ACTIVATION_SECRET_HEX` | 64 位十六进制发行密钥（Release 必填；CI 可选） |
-| `TIMER_GENERATOR_PASSWORD` | 编译期口令（Release 必填；CI 可选） |
-
-> 正式发布请使用**独立**发行密钥，勿与开发环境混用。详见 [CONFIGURATION.md](./CONFIGURATION.md#github-actions-secrets)。
-
-### 分支保护（推荐）
-
-在 **Settings → Branches → Branch protection rules** 为 `main` 启用：
-
-- [ ] Require a pull request before merging
-- [ ] Require status checks to pass：**CI / check**、**CI / release-parity**
-- [ ] Require branches to be up to date before merging
+| 工作流 | 文件 | 触发 | Job |
+|--------|------|------|-----|
+| CI | `.github/workflows/ci.yml` | `main` push/PR、`workflow_dispatch` | `check`、`release-parity` |
+| Release | `.github/workflows/release.yml` | tag `v*`、`workflow_dispatch` | `build`（MSI + GitHub Release） |
 
 ## 四、创建 GitHub Release
 
-**手动：**
+**推荐（自动）：** 打 tag 并 `git push github vX.Y.Z`，见 [零、正式发布](#正式发布github-release)。
 
-```bash
-git tag v0.1.0
-git push github v0.1.0   # 或你的 GitHub remote 名称
-```
-
-推送 `v*` 标签后，`release.yml` 自动构建 MSI 并创建 Release（`softprops/action-gh-release`）。
-
-**手动上传（备用）：** 从 Actions 产物或本地 `target/release/bundle/msi/` 下载 MSI，注明 Windows 10/11 x64、激活方式、变更说明。
+**手动上传（备用）：** 从 Actions 产物 `TimerApp-msi` 或本地 `target/release/bundle/msi/` 下载 MSI，在 GitHub Releases 页面上传，注明 Windows 10/11 x64、激活方式、变更说明。
 
 ## 五、发布后
 

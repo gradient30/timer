@@ -61,7 +61,8 @@ openssl rand -hex 32
 - **未配置 CI Secrets**：工作流使用 `config/public/activation.env.example` 中的占位值，足以通过 `cargo check/clippy/test`。
 - **Release 工作流**：缺少任一 Secret 将直接失败，避免误发占位密钥包。
 
-工作流文件：`.github/workflows/ci.yml`、`.github/workflows/release.yml`。
+工作流文件：`.github/workflows/ci.yml`、`.github/workflows/release.yml`。  
+推送、打 tag、Secrets 配置等操作步骤见 [RELEASE.md](./RELEASE.md#零github-actions-操作步骤)。
 
 ## 三、开发 vs 发布构建
 
