@@ -26,6 +26,9 @@ Thumbs.db
 # ===== 个人脚本（勿提交） =====
 git-sync-to-tcloud.sh
 git_init_tcloud.sh
+apply-bundle.sh
+git-bundle-sync-push.lib.sh
+watch-bundles.sh
 scripts/local/
 
 # ===== 同步/传输临时文件 =====
