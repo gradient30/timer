@@ -98,6 +98,7 @@ let loopEnabled = true;
 let loopIntervalMinutes = 5;
 let enforceRelockDuringRest = true;
 let loopPausedBySchedule = false;
+let quietHoursActive = false;
 let latestRuntime: any = null;
 let scheduleRefreshInFlight = false;
 let lastScheduleRefreshAt = 0;
@@ -241,6 +242,10 @@ function renderStatusText(state: string) {
     return;
   }
   statusOverride = null;
+  if (quietHoursActive) {
+    statusText.textContent = "用餐/夜间休息中，倒计时已停止";
+    return;
+  }
   if (state === "Running") {
     statusText.textContent = "计时进行中";
     return;
@@ -576,6 +581,24 @@ function setScheduleIndicator(isEffective: boolean) {
   }
 }
 
+function setQuietHoursActive(active: boolean) {
+  quietHoursActive = active;
+  if (timerDisplayContainer) {
+    timerDisplayContainer.classList.toggle("quiet-hours-active", active);
+  }
+  renderStatusText(currentState);
+  updateButtonStates(currentState);
+}
+
+async function refreshQuietHoursStatus() {
+  try {
+    const active = await invoke("check_quiet_hours_active") as boolean;
+    setQuietHoursActive(active);
+  } catch (e) {
+    console.error("检查用餐/夜间休息时段失败:", e);
+  }
+}
+
 async function refreshScheduleIndicator(useThrottle = false) {
   const now = Date.now();
   if (useThrottle && now - lastScheduleRefreshAt < 2000) {
@@ -614,6 +637,11 @@ async function maybeStartLoopRestCycle(enforceLock = false) {
   }
 
   try {
+    const quiet = await invoke("check_quiet_hours_active") as boolean;
+    setQuietHoursActive(quiet);
+    if (quiet) {
+      return;
+    }
     const effective = await invoke("check_schedule_effective") as boolean;
     setScheduleIndicator(effective);
     if (!effective) {
@@ -635,6 +663,11 @@ async function maybeStartNextWorkCycle() {
   }
 
   try {
+    const quiet = await invoke("check_quiet_hours_active") as boolean;
+    setQuietHoursActive(quiet);
+    if (quiet) {
+      return;
+    }
     const effective = await invoke("check_schedule_effective") as boolean;
     setScheduleIndicator(effective);
     if (!effective) {
@@ -729,18 +762,18 @@ btnCloseActivationGen?.addEventListener("click", () => {
 function updateButtonStates(state: string) {
   switch (state) {
     case "Idle":
-      btnStart.disabled = false;
+      btnStart.disabled = quietHoursActive;
       btnStart.textContent = "开始";
       btnPause.disabled = true;
       btnPause.textContent = "暂停";
       break;
     case "Running":
       btnStart.disabled = true;
-      btnPause.disabled = false;
+      btnPause.disabled = quietHoursActive;
       btnPause.textContent = "暂停";
       break;
     case "Paused":
-      btnStart.disabled = false;
+      btnStart.disabled = quietHoursActive;
       btnStart.textContent = "继续";
       btnPause.disabled = true;
       btnPause.textContent = "暂停";
@@ -774,6 +807,7 @@ async function initAfterActivation() {
   await refreshActionType();
   const runtime = await invoke("sync_timer_on_launch") as any;
   updateUI(runtime);
+  await refreshQuietHoursStatus();
   await refreshScheduleIndicator();
   await refreshSecurityStatus();
   if (!securityStatus.password_set && !securityStatus.safe_mode) {
@@ -800,6 +834,14 @@ async function init() {
 listen("timer-update", (event: any) => {
   updateUI(event.payload);
   void refreshScheduleIndicator(true);
+});
+
+listen("quiet-hours-update", (event: any) => {
+  const active = !!event.payload?.active;
+  setQuietHoursActive(active);
+  if (active) {
+    hideNoticeModal();
+  }
 });
 
 // 开始/继续
@@ -1011,6 +1053,33 @@ const endTime = document.getElementById("end-time") as HTMLInputElement;
 
 const weekdayLimitEnabled = document.getElementById("weekday-limit-enabled") as HTMLInputElement;
 const weekdaysContainer = document.getElementById("weekdays-container") as HTMLDivElement;
+const quietHoursEnabled = document.getElementById("quiet-hours-enabled") as HTMLInputElement;
+const quietHoursWindows = document.getElementById("quiet-hours-windows") as HTMLDivElement;
+const quietLunchStart = document.getElementById("quiet-lunch-start") as HTMLInputElement;
+const quietLunchEnd = document.getElementById("quiet-lunch-end") as HTMLInputElement;
+const quietDinnerStart = document.getElementById("quiet-dinner-start") as HTMLInputElement;
+const quietDinnerEnd = document.getElementById("quiet-dinner-end") as HTMLInputElement;
+const quietNightStart = document.getElementById("quiet-night-start") as HTMLInputElement;
+const quietNightEnd = document.getElementById("quiet-night-end") as HTMLInputElement;
+
+const DEFAULT_QUIET_WINDOWS = [
+  { start: "12:00", end: "13:00" },
+  { start: "18:00", end: "19:00" },
+  { start: "00:00", end: "09:00" },
+];
+
+function toTimeInputValue(value: string | undefined, fallback: string): string {
+  const parsed = (value || fallback).trim();
+  return parsed.length >= 5 ? parsed.slice(0, 5) : fallback;
+}
+
+function applyQuietHoursWindowControls(enabled: boolean) {
+  if (enabled) {
+    quietHoursWindows?.classList.add("active");
+  } else {
+    quietHoursWindows?.classList.remove("active");
+  }
+}
 
 const autoStart = document.getElementById("auto-start") as HTMLInputElement;
 const startMinimized = document.getElementById("start-minimized") as HTMLInputElement;
@@ -1274,6 +1343,10 @@ weekdayLimitEnabled?.addEventListener("change", () => {
   }
 });
 
+quietHoursEnabled?.addEventListener("change", () => {
+  applyQuietHoursWindowControls(quietHoursEnabled.checked);
+});
+
 function updateLoopIntervalControls() {
   const mode = (document.querySelector("input[name=\"execution-mode\"]:checked") as HTMLInputElement)?.value || "loop";
   if (mode === "loop") {
@@ -1344,6 +1417,18 @@ async function loadSettings() {
       checkbox.checked = weekdays.includes(parseInt(checkbox.value));
     });
 
+    const quietWindows = Array.isArray(config.quiet_hours?.windows)
+      ? config.quiet_hours.windows
+      : [];
+    quietHoursEnabled.checked = config.quiet_hours?.enabled ?? true;
+    applyQuietHoursWindowControls(quietHoursEnabled.checked);
+    quietLunchStart.value = toTimeInputValue(quietWindows[0]?.start, DEFAULT_QUIET_WINDOWS[0].start);
+    quietLunchEnd.value = toTimeInputValue(quietWindows[0]?.end, DEFAULT_QUIET_WINDOWS[0].end);
+    quietDinnerStart.value = toTimeInputValue(quietWindows[1]?.start, DEFAULT_QUIET_WINDOWS[1].start);
+    quietDinnerEnd.value = toTimeInputValue(quietWindows[1]?.end, DEFAULT_QUIET_WINDOWS[1].end);
+    quietNightStart.value = toTimeInputValue(quietWindows[2]?.start, DEFAULT_QUIET_WINDOWS[2].start);
+    quietNightEnd.value = toTimeInputValue(quietWindows[2]?.end, DEFAULT_QUIET_WINDOWS[2].end);
+
     const theme = normalizeTheme(config.ui?.theme);
     applyTheme(theme);
     updateThemeToggleButton(theme);
@@ -1392,6 +1477,12 @@ btnSaveSettings?.addEventListener("click", async () => {
       ? resolvedLoopInterval
       : (config.timer?.loop_interval_minutes ?? 5);
     const nextEnforceRelock = enforceRelockToggle?.checked ?? true;
+    if (!quietLunchStart.value || !quietLunchEnd.value
+      || !quietDinnerStart.value || !quietDinnerEnd.value
+      || !quietNightStart.value || !quietNightEnd.value) {
+      await showSystemWarning("请完整填写用餐/夜间休息时段");
+      return;
+    }
     if (nextLoopEnabled && (!Number.isFinite(nextLoopInterval) || nextLoopInterval < 1 || nextLoopInterval > 1440)) {
       await showSystemWarning("循环间隔请输入 1-1440 分钟");
       return;
@@ -1424,15 +1515,36 @@ btnSaveSettings?.addEventListener("click", async () => {
       },
     });
 
-    // 先写操作系统启动项，成功后再写入配置，避免配置显示已开启但实际未注册
-    await invoke("set_auto_start", { enabled: autoStart.checked });
-    await invoke("update_startup_config", {
+    await invoke("update_quiet_hours_config", {
       config: {
-        auto_start: autoStart.checked,
-        start_minimized: startMinimized.checked,
-        start_timer_automatically: startTimerAuto.checked,
+        enabled: quietHoursEnabled.checked,
+        windows: [
+          { start: quietLunchStart.value, end: quietLunchEnd.value },
+          { start: quietDinnerStart.value, end: quietDinnerEnd.value },
+          { start: quietNightStart.value, end: quietNightEnd.value },
+        ],
       },
     });
+
+    // 先写 HKCU Run，成功后再写配置；配置失败则回滚注册表
+    const previousAutoStart = config.startup?.auto_start || false;
+    try {
+      await invoke("set_auto_start", { enabled: autoStart.checked });
+      await invoke("update_startup_config", {
+        config: {
+          auto_start: autoStart.checked,
+          start_minimized: startMinimized.checked,
+          start_timer_automatically: startTimerAuto.checked,
+        },
+      });
+    } catch (startupErr) {
+      try {
+        await invoke("set_auto_start", { enabled: previousAutoStart });
+      } catch {
+        // 回滚失败时仍抛出原始错误
+      }
+      throw startupErr;
+    }
 
     // 保存提示配置
     const noticeSeconds = parseInt(advanceNotice?.value || "30");
@@ -1455,6 +1567,7 @@ btnSaveSettings?.addEventListener("click", async () => {
     renderActionPreview(currentActionType);
 
     await refreshScheduleIndicator();
+    await refreshQuietHoursStatus();
     if (latestRuntime) {
       renderTimerLabel(latestRuntime);
     }

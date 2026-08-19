@@ -6,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use crate::activation;
+use crate::quiet_hours::{QuietHoursConfig, normalize_config as normalize_quiet_hours_config};
 
 /// 应用配置版本
 const CONFIG_VERSION: &str = "1.1";
@@ -214,6 +215,8 @@ pub struct AppConfig {
     pub version: String,
     pub timer: TimerConfig,
     pub schedule: ScheduleConfig,
+    #[serde(default)]
+    pub quiet_hours: QuietHoursConfig,
     pub action: ActionConfig,
     pub startup: StartupConfig,
     #[serde(default)]
@@ -232,6 +235,7 @@ impl Default for AppConfig {
             version: CONFIG_VERSION.to_string(),
             timer: TimerConfig::default(),
             schedule: ScheduleConfig::default(),
+            quiet_hours: QuietHoursConfig::default(),
             action: ActionConfig::default(),
             startup: StartupConfig::default(),
             ui: UiConfig::default(),
@@ -368,6 +372,17 @@ pub fn update_schedule_config(
     state.update(|c| c.schedule = config)
 }
 
+/// 更新用餐/夜间休息时段配置
+#[tauri::command]
+pub fn update_quiet_hours_config(
+    state: tauri::State<std::sync::Arc<ConfigManager>>,
+    config: QuietHoursConfig,
+) -> Result<(), String> {
+    activation::ensure_activated(state.inner())?;
+    let normalized = normalize_quiet_hours_config(&config)?;
+    state.update(|c| c.quiet_hours = normalized)
+}
+
 /// 更新执行动作配置
 #[tauri::command]
 pub fn update_action_config(
@@ -449,6 +464,14 @@ mod tests {
         assert_eq!(config.action.action_type, "lock");
         assert!(config.security.password_hash.is_none());
         assert!(!config.activation.activated);
+        assert!(config.quiet_hours.enabled);
+        assert_eq!(config.quiet_hours.windows.len(), 3);
+        assert_eq!(config.quiet_hours.windows[0].start, "12:00");
+        assert_eq!(config.quiet_hours.windows[0].end, "13:00");
+        assert_eq!(config.quiet_hours.windows[1].start, "18:00");
+        assert_eq!(config.quiet_hours.windows[1].end, "19:00");
+        assert_eq!(config.quiet_hours.windows[2].start, "00:00");
+        assert_eq!(config.quiet_hours.windows[2].end, "09:00");
     }
 
     #[test]
@@ -457,6 +480,7 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("interval_minutes"));
         assert!(json.contains("schedule"));
+        assert!(json.contains("quiet_hours"));
         assert!(json.contains("security"));
         assert!(json.contains("activation"));
     }
@@ -482,5 +506,16 @@ mod tests {
         assert_eq!(normalize_action_type("shutdown"), "shutdown");
         assert_eq!(normalize_action_type("suspend"), "lock");
         assert_eq!(normalize_action_type("unknown"), "lock");
+    }
+
+    #[test]
+    fn missing_quiet_hours_field_uses_defaults() {
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("quiet_hours");
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert!(config.quiet_hours.enabled);
+        assert_eq!(config.quiet_hours.windows.len(), 3);
+        assert_eq!(config.quiet_hours.windows[2].start, "00:00");
+        assert_eq!(config.quiet_hours.windows[2].end, "09:00");
     }
 }

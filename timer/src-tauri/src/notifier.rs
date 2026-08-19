@@ -181,6 +181,12 @@ pub fn delay_execution(
     activation::ensure_activated(config_manager.inner())?;
     config::reset_daily_delay_quota_if_needed(config_manager.inner())?;
     let config = config_manager.get()?;
+    if crate::quiet_hours::is_quiet_hours_active(
+        &config.quiet_hours,
+        crate::quiet_hours::local_now_minutes(),
+    ) {
+        return Err(crate::quiet_hours::BLOCK_MESSAGE.to_string());
+    }
     let current_delay_count = config.runtime_state.delay_count;
     let max_allowed = config.timer.max_delay_times;
 
@@ -231,6 +237,12 @@ pub fn confirm_execution(
     activation::ensure_activated(config_manager.inner())?;
     config::reset_daily_delay_quota_if_needed(config_manager.inner())?;
     let config = config_manager.get()?;
+    if crate::quiet_hours::is_quiet_hours_active(
+        &config.quiet_hours,
+        crate::quiet_hours::local_now_minutes(),
+    ) {
+        return Err(crate::quiet_hours::BLOCK_MESSAGE.to_string());
+    }
     system::execute_action(&config.action.action_type);
 
     let app_state = state.lock().map_err(|e| e.to_string())?;

@@ -1,20 +1,18 @@
 //! 开机自启
 //!
-//! 优先使用「用户登录后延迟启动」的计划任务，避免 HKCU Run 在部分开机场景被跳过。
-//! 计划任务失败时回退到加引号的 Run 注册表项。
+//! 采用当前用户 HKCU Run 注册表（路径加引号），无需管理员权限。
+//! 应用启动时若配置已开启，会按当前 exe 路径自愈写入，并清理旧版计划任务。
 
 use std::env;
 use std::path::Path;
-use std::process::{Command, Output};
 use std::sync::Arc;
 
 use crate::activation;
 use crate::config::ConfigManager;
 
-const REGISTRY_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const APP_NAME: &str = "TimerApp";
-const TASK_NAME: &str = "TimerApp";
-const LOGON_DELAY: &str = "0000:20";
+const LEGACY_TASK_NAME: &str = "TimerApp";
 
 /// 检查开机自启是否启用
 #[tauri::command]
@@ -28,7 +26,7 @@ pub fn is_auto_start_enabled(
 fn is_auto_start_enabled_internal() -> Result<bool, String> {
     #[cfg(windows)]
     {
-        Ok(logon_task_exists() || run_key_exists())
+        Ok(is_run_value_present(RUN_SUBKEY, APP_NAME)?)
     }
 
     #[cfg(not(windows))]
@@ -56,29 +54,14 @@ fn set_auto_start_internal(enabled: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
         if enabled {
-            let exe_path = env::current_exe().map_err(|e| format!("获取程序路径失败: {}", e))?;
+            let exe_path = env::current_exe().map_err(|e| format!("获取程序路径失败: {e}"))?;
             let command = autostart_command(&exe_path);
-            match create_logon_task(&command) {
-                Ok(()) => {
-                    let _ = delete_run_key();
-                    Ok(())
-                }
-                Err(task_err) => set_run_key(&command).map_err(|reg_err| {
-                    format!("设置开机自启失败: 计划任务 ({task_err}); 注册表 ({reg_err})")
-                }),
-            }
+            apply_run_value(RUN_SUBKEY, APP_NAME, true, &command)?;
         } else {
-            let task_result = delete_logon_task();
-            let run_result = delete_run_key();
-            match (task_result, run_result) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(task_err), Err(run_err)) => {
-                    Err(format!("取消开机自启失败: {task_err}; {run_err}"))
-                }
-                (Err(task_err), Ok(())) => Err(task_err),
-                (Ok(()), Err(run_err)) => Err(run_err),
-            }
+            apply_run_value(RUN_SUBKEY, APP_NAME, false, "")?;
         }
+        let _ = delete_legacy_logon_task();
+        Ok(())
     }
 
     #[cfg(not(windows))]
@@ -88,142 +71,223 @@ fn set_auto_start_internal(enabled: bool) -> Result<(), String> {
     }
 }
 
-/// 生成可供 Windows 启动项使用的命令行（路径必须加引号，否则含空格时会启动失败）
+/// 生成可供 Windows Run 项使用的命令行（必须加引号，并去掉 `\\?\` 前缀）
 fn autostart_command(exe: &Path) -> String {
-    let path = exe.to_string_lossy().replace('"', "");
+    let mut path = exe.to_string_lossy().replace('"', "");
+    const VERBATIM: &str = r"\\?\";
+    if let Some(stripped) = path.strip_prefix(VERBATIM) {
+        path = stripped.to_string();
+    }
     format!("\"{path}\"")
 }
 
-#[cfg(windows)]
-fn hidden_command(program: &str) -> Command {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let mut cmd = Command::new(program);
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd
+fn win32_error_message(action: &str, code: u32) -> String {
+    format!("{action}失败，错误码 {code}")
 }
 
 #[cfg(windows)]
-fn command_output_error(action: &str, output: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = if !stderr.trim().is_empty() {
-        stderr.trim().to_string()
-    } else {
-        stdout.trim().to_string()
+fn apply_run_value(subkey: &str, value_name: &str, enabled: bool, command: &str) -> Result<(), String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+        KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
     };
-    format!("{action}失败: {detail}")
+
+    unsafe {
+        let mut key = HKEY::default();
+        let status = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            &HSTRING::from(subkey),
+            None,
+            windows::core::PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_READ | KEY_WRITE,
+            None,
+            &mut key,
+            None,
+        );
+        if status != ERROR_SUCCESS {
+            return Err(win32_error_message("打开开机启动注册表", status.0));
+        }
+
+        let result = if enabled {
+            if command.trim_matches('"').is_empty() {
+                let _ = RegCloseKey(key);
+                return Err("启用开机自启时程序路径不能为空".to_string());
+            }
+            let bytes: Vec<u8> = command
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            let set_status = RegSetValueExW(
+                key,
+                &HSTRING::from(value_name),
+                None,
+                REG_SZ,
+                Some(&bytes),
+            );
+            if set_status == ERROR_SUCCESS {
+                Ok(())
+            } else {
+                Err(win32_error_message("写入开机启动注册表", set_status.0))
+            }
+        } else {
+            let delete_status = RegDeleteValueW(key, &HSTRING::from(value_name));
+            if delete_status == ERROR_SUCCESS || delete_status == ERROR_FILE_NOT_FOUND {
+                Ok(())
+            } else {
+                Err(win32_error_message("删除开机启动注册表", delete_status.0))
+            }
+        };
+
+        let _ = RegCloseKey(key);
+        result
+    }
 }
 
 #[cfg(windows)]
-fn not_found_output(output: &Output) -> bool {
+fn is_run_value_present(subkey: &str, value_name: &str) -> Result<bool, String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
+    };
+
+    unsafe {
+        let mut key = HKEY::default();
+        let open_status = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            &HSTRING::from(subkey),
+            None,
+            KEY_READ,
+            &mut key,
+        );
+        if open_status == ERROR_FILE_NOT_FOUND {
+            return Ok(false);
+        }
+        if open_status != ERROR_SUCCESS {
+            return Err(win32_error_message("读取开机启动注册表", open_status.0));
+        }
+
+        let mut size = 0u32;
+        let query_status = RegQueryValueExW(
+            key,
+            &HSTRING::from(value_name),
+            None,
+            None,
+            None,
+            Some(&mut size),
+        );
+        let _ = RegCloseKey(key);
+
+        if query_status == ERROR_SUCCESS {
+            Ok(true)
+        } else if query_status == ERROR_FILE_NOT_FOUND {
+            Ok(false)
+        } else {
+            Err(win32_error_message("查询开机启动注册表", query_status.0))
+        }
+    }
+}
+
+#[cfg(all(windows, test))]
+fn query_run_value(subkey: &str, value_name: &str) -> Result<Option<String>, String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
+        REG_VALUE_TYPE,
+    };
+
+    unsafe {
+        let mut key = HKEY::default();
+        let open_status = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            &HSTRING::from(subkey),
+            None,
+            KEY_READ,
+            &mut key,
+        );
+        if open_status == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+        if open_status != ERROR_SUCCESS {
+            return Err(win32_error_message("读取开机启动注册表", open_status.0));
+        }
+
+        let mut ty = REG_VALUE_TYPE::default();
+        let mut size = 0u32;
+        let probe = RegQueryValueExW(
+            key,
+            &HSTRING::from(value_name),
+            None,
+            Some(&mut ty),
+            None,
+            Some(&mut size),
+        );
+        if probe == ERROR_FILE_NOT_FOUND {
+            let _ = RegCloseKey(key);
+            return Ok(None);
+        }
+        if probe != ERROR_SUCCESS {
+            let _ = RegCloseKey(key);
+            return Err(win32_error_message("查询开机启动注册表", probe.0));
+        }
+
+        let mut buffer = vec![0u8; size as usize];
+        let read_status = RegQueryValueExW(
+            key,
+            &HSTRING::from(value_name),
+            None,
+            Some(&mut ty),
+            Some(buffer.as_mut_ptr()),
+            Some(&mut size),
+        );
+        let _ = RegCloseKey(key);
+        if read_status != ERROR_SUCCESS {
+            return Err(win32_error_message("读取开机启动注册表值", read_status.0));
+        }
+
+        let u16_data = buffer
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .take_while(|unit| *unit != 0)
+            .collect::<Vec<u16>>();
+        Ok(Some(String::from_utf16_lossy(&u16_data)))
+    }
+}
+
+#[cfg(windows)]
+fn delete_legacy_logon_task() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let output = Command::new("schtasks.exe")
+        .args(["/Delete", "/TN", LEGACY_TASK_NAME, "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("清理旧版登录任务失败: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    text.contains("无法找到")
+    if text.contains("无法找到")
         || text.contains("cannot find")
         || text.contains("Cannot find")
         || text.contains("ERROR: The system cannot find")
         || text.contains("Unable to find")
-        || text.contains("ERROR_FILE_NOT_FOUND")
-}
-
-#[cfg(windows)]
-fn logon_task_exists() -> bool {
-    hidden_command("schtasks.exe")
-        .args(["/Query", "/TN", TASK_NAME])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(windows)]
-fn run_key_exists() -> bool {
-    hidden_command("reg.exe")
-        .args(["query", REGISTRY_KEY, "/v", APP_NAME])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(windows)]
-fn create_logon_task(command: &str) -> Result<(), String> {
-    let output = hidden_command("schtasks.exe")
-        .args([
-            "/Create",
-            "/TN",
-            TASK_NAME,
-            "/TR",
-            command,
-            "/SC",
-            "ONLOGON",
-            "/DELAY",
-            LOGON_DELAY,
-            "/RL",
-            "LIMITED",
-            "/F",
-        ])
-        .output()
-        .map_err(|e| format!("执行 schtasks create 失败: {e}"))?;
-
-    if output.status.success() {
+    {
         Ok(())
     } else {
-        Err(command_output_error("创建登录启动任务", &output))
-    }
-}
-
-#[cfg(windows)]
-fn delete_logon_task() -> Result<(), String> {
-    let output = hidden_command("schtasks.exe")
-        .args(["/Delete", "/TN", TASK_NAME, "/F"])
-        .output()
-        .map_err(|e| format!("执行 schtasks delete 失败: {e}"))?;
-
-    if output.status.success() || not_found_output(&output) {
-        Ok(())
-    } else {
-        Err(command_output_error("删除登录启动任务", &output))
-    }
-}
-
-#[cfg(windows)]
-fn set_run_key(command: &str) -> Result<(), String> {
-    let output = hidden_command("reg.exe")
-        .args([
-            "add",
-            REGISTRY_KEY,
-            "/v",
-            APP_NAME,
-            "/t",
-            "REG_SZ",
-            "/d",
-            command,
-            "/f",
-        ])
-        .output()
-        .map_err(|e| format!("执行reg add失败: {e}"))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(command_output_error("设置开机自启注册表", &output))
-    }
-}
-
-#[cfg(windows)]
-fn delete_run_key() -> Result<(), String> {
-    let output = hidden_command("reg.exe")
-        .args(["delete", REGISTRY_KEY, "/v", APP_NAME, "/f"])
-        .output()
-        .map_err(|e| format!("执行reg delete失败: {e}"))?;
-
-    if output.status.success() || not_found_output(&output) {
-        Ok(())
-    } else {
-        Err(command_output_error("取消开机自启", &output))
+        Err(format!("清理旧版登录任务失败: {}", text.trim()))
     }
 }
 
@@ -250,5 +314,42 @@ mod tests {
     fn autostart_command_quotes_paths_without_spaces() {
         let path = PathBuf::from(r"D:\workspace_test\timer.exe");
         assert_eq!(autostart_command(&path), r#""D:\workspace_test\timer.exe""#);
+    }
+
+    #[test]
+    fn autostart_command_strips_windows_verbatim_prefix() {
+        let path = PathBuf::from(r"\\?\C:\Program Files\TimerApp\timer.exe");
+        assert_eq!(
+            autostart_command(&path),
+            r#""C:\Program Files\TimerApp\timer.exe""#
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn run_key_roundtrip_on_temp_subkey() {
+        const TEST_SUBKEY: &str = r"Software\TimerApp\UnitTestRun";
+        const TEST_NAME: &str = "TimerAppStartupTest";
+        let command = r#""C:\Program Files\TimerApp\timer.exe""#;
+
+        apply_run_value(TEST_SUBKEY, TEST_NAME, true, command).unwrap();
+        assert!(is_run_value_present(TEST_SUBKEY, TEST_NAME).unwrap());
+        assert_eq!(
+            query_run_value(TEST_SUBKEY, TEST_NAME).unwrap().as_deref(),
+            Some(command)
+        );
+
+        apply_run_value(TEST_SUBKEY, TEST_NAME, false, "").unwrap();
+        assert!(!is_run_value_present(TEST_SUBKEY, TEST_NAME).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn enabling_with_empty_path_is_rejected() {
+        const TEST_SUBKEY: &str = r"Software\TimerApp\UnitTestRun";
+        const TEST_NAME: &str = "TimerAppStartupEmptyPath";
+        let err = apply_run_value(TEST_SUBKEY, TEST_NAME, true, r#""""#).unwrap_err();
+        assert!(err.contains("路径不能为空"));
+        let _ = apply_run_value(TEST_SUBKEY, TEST_NAME, false, "");
     }
 }

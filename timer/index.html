@@ -239,6 +239,36 @@
                   <label><input type="checkbox" value="7" /><span>日</span></label>
                 </div>
               </div>
+
+              <div class="rule-block">
+                <div class="rule-block-head">
+                  <h3 class="panel-title">用餐/夜间休息时段</h3>
+                  <label class="rule-toggle">
+                    <input type="checkbox" id="quiet-hours-enabled" checked />
+                  </label>
+                </div>
+                <p class="rule-hint">到点强制停止倒计时，且不会因此锁屏；时段结束按当前工作分钟重置并自动开始。这与「循环番茄钟」休息阶段的锁屏不是同一回事。</p>
+                <div id="quiet-hours-windows" class="quiet-hours-windows active">
+                  <div class="quiet-hours-row">
+                    <span class="quiet-hours-label">午休</span>
+                    <input type="time" id="quiet-lunch-start" value="12:00" />
+                    <span>至</span>
+                    <input type="time" id="quiet-lunch-end" value="13:00" />
+                  </div>
+                  <div class="quiet-hours-row">
+                    <span class="quiet-hours-label">晚饭</span>
+                    <input type="time" id="quiet-dinner-start" value="18:00" />
+                    <span>至</span>
+                    <input type="time" id="quiet-dinner-end" value="19:00" />
+                  </div>
+                  <div class="quiet-hours-row">
+                    <span class="quiet-hours-label">夜间</span>
+                    <input type="time" id="quiet-night-start" value="00:00" />
+                    <span>至</span>
+                    <input type="time" id="quiet-night-end" value="09:00" />
+                  </div>
+                </div>
+              </div>
             </section>
 
             <section class="settings-tab-panel" data-settings-panel="loop">
@@ -275,6 +305,7 @@
                 <input type="checkbox" id="enforce-relock" checked />
                 <span>休息阶段强制锁屏（解锁后会再锁回）</span>
               </label>
+              <p class="rule-hint">仅作用于循环番茄钟的休息阶段。午休/晚饭/夜间见「生效规则」里的用餐/夜间休息时段，不会因此锁屏。</p>
 
               <div class="settings-divider"></div>
 
@@ -363,7 +394,8 @@
             <h4>其它</h4>
             <ul class="help-list">
               <li>可配置时间段、星期生效规则；不在有效周期内不会执行动作。</li>
-              <li>循环模式完成后进入休息，间隔结束自动开始下一轮。</li>
+              <li>循环模式完成后进入休息，间隔结束自动开始下一轮（休息阶段可强制锁屏）。</li>
+              <li>用餐/夜间休息（默认 12:00–13:00、18:00–19:00、00:00–09:00）会停止倒计时且不锁屏；时段结束按工作分钟自动重新开始。</li>
               <li>退出程序需验证密码；忘记密码可通过密保问题重置。</li>
             </ul>
           </section>

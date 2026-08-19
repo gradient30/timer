@@ -3,17 +3,20 @@
     tray::TrayIconBuilder,
     Emitter, Manager, WindowEvent,
 };
+use serde::Serialize;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Mutex,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // 导入各模块
 mod timer;
 mod system;
 pub mod single_instance;
 mod config;
+mod quiet_hours;
 mod schedule;
 mod notifier;
 mod startup;
@@ -23,6 +26,7 @@ mod security;
 
 use timer::{TimerEngine, TimerRuntime, TimerConfig as TimerSettings, TimerState, TimerPhase};
 use config::ConfigManager;
+use quiet_hours::QuietHoursTickAction;
 use std::sync::Arc;
 
 // 全局定时器引擎状态
@@ -112,6 +116,157 @@ fn persist_timer_runtime(
     config_manager.update(|c| c.runtime_state = runtime_state)
 }
 
+#[derive(Clone, Serialize)]
+struct QuietHoursStatusPayload {
+    active: bool,
+}
+
+fn is_quiet_hours_now(config: &config::AppConfig) -> bool {
+    quiet_hours::is_quiet_hours_active(&config.quiet_hours, quiet_hours::local_now_minutes())
+}
+
+fn reject_if_quiet_hours(config_manager: &Arc<ConfigManager>) -> Result<(), String> {
+    let config = config_manager.get()?;
+    if is_quiet_hours_now(&config) {
+        Err(quiet_hours::BLOCK_MESSAGE.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn emit_quiet_hours_status(app: &tauri::AppHandle, active: bool) {
+    let _ = app.emit("quiet-hours-update", QuietHoursStatusPayload { active });
+}
+
+fn apply_quiet_hours_force_stop(
+    app: &tauri::AppHandle,
+    config_manager: &Arc<ConfigManager>,
+    app_state: &Mutex<AppState>,
+    rest_lock_guard: &RestLockGuardState,
+    emit_status: bool,
+) -> Result<(), String> {
+    set_rest_lock_guard(rest_lock_guard, false);
+    let config = config_manager.get()?;
+    let state = app_state.lock().map_err(|e| e.to_string())?;
+    let runtime = state.timer.get_runtime();
+    let needs_stop = quiet_hours::should_force_reset(
+        runtime.state == TimerState::Idle,
+        runtime.phase == TimerPhase::Work,
+        runtime.remaining_seconds,
+    );
+    if needs_stop {
+        state
+            .timer
+            .set_phase_interval(TimerPhase::Work, config.timer.interval_minutes)?;
+        state.timer.stop();
+        let mut runtime_state = state.timer.to_runtime_state();
+        drop(state);
+        runtime_state.delay_count = config.runtime_state.delay_count;
+        runtime_state.delay_quota_date = config.runtime_state.delay_quota_date.clone();
+        let _ = config_manager.update(|c| c.runtime_state = runtime_state);
+
+        let state = app_state.lock().map_err(|e| e.to_string())?;
+        let runtime = state.timer.get_runtime();
+        drop(state);
+        let _ = app.emit("timer-update", &runtime);
+        update_tray_tooltip(app, &runtime);
+    } else {
+        drop(state);
+    }
+    if emit_status || needs_stop {
+        emit_quiet_hours_status(app, true);
+    }
+    Ok(())
+}
+
+fn apply_quiet_hours_force_start(
+    app: &tauri::AppHandle,
+    config_manager: &Arc<ConfigManager>,
+    app_state: &Mutex<AppState>,
+    rest_lock_guard: &RestLockGuardState,
+) -> Result<(), String> {
+    set_rest_lock_guard(rest_lock_guard, false);
+    let _ = config::reset_daily_delay_quota_if_needed(config_manager);
+    let config = config_manager.get()?;
+    let state = app_state.lock().map_err(|e| e.to_string())?;
+    state
+        .timer
+        .set_phase_interval(TimerPhase::Work, config.timer.interval_minutes)?;
+    configure_timer_callback(&state.timer, app.clone(), Arc::clone(config_manager));
+    state.timer.start()?;
+    let mut runtime_state = state.timer.to_runtime_state();
+    drop(state);
+    runtime_state.delay_count = config.runtime_state.delay_count;
+    runtime_state.delay_quota_date = config.runtime_state.delay_quota_date.clone();
+    let _ = config_manager.update(|c| c.runtime_state = runtime_state);
+
+    let state = app_state.lock().map_err(|e| e.to_string())?;
+    let runtime = state.timer.get_runtime();
+    drop(state);
+    let _ = app.emit("timer-update", &runtime);
+    update_tray_tooltip(app, &runtime);
+    emit_quiet_hours_status(app, false);
+    Ok(())
+}
+
+fn spawn_quiet_hours_watcher(app: tauri::AppHandle) {
+    thread::spawn(move || {
+        let mut was_inside: Option<bool> = None;
+        loop {
+            if let (Some(config_manager), Some(app_state), Some(rest_lock_guard)) = (
+                app.try_state::<Arc<ConfigManager>>(),
+                app.try_state::<Mutex<AppState>>(),
+                app.try_state::<RestLockGuardState>(),
+            ) {
+                match config_manager.get() {
+                    Ok(config) if !config.activation.activated => {
+                        was_inside = None;
+                    }
+                    Ok(config) => {
+                        let now_inside = is_quiet_hours_now(&config);
+                        let action = quiet_hours::tick_action(was_inside, now_inside);
+                        let mut action_ok = true;
+                        match action {
+                            QuietHoursTickAction::ForceStop => {
+                                let entering = was_inside != Some(true);
+                                if let Err(err) = apply_quiet_hours_force_stop(
+                                    &app,
+                                    config_manager.inner(),
+                                    app_state.inner(),
+                                    rest_lock_guard.inner(),
+                                    entering,
+                                ) {
+                                    action_ok = false;
+                                    eprintln!("用餐/夜间休息时段停止倒计时失败: {}", err);
+                                }
+                            }
+                            QuietHoursTickAction::ForceStartWork => {
+                                if let Err(err) = apply_quiet_hours_force_start(
+                                    &app,
+                                    config_manager.inner(),
+                                    app_state.inner(),
+                                    rest_lock_guard.inner(),
+                                ) {
+                                    action_ok = false;
+                                    eprintln!("用餐/夜间休息时段结束后开始倒计时失败: {}", err);
+                                }
+                            }
+                            QuietHoursTickAction::None => {}
+                        }
+                        was_inside = quiet_hours::next_inside_flag(
+                            was_inside,
+                            now_inside,
+                            action_ok,
+                        );
+                    }
+                    Err(_) => {}
+                }
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+    });
+}
+
 fn sync_timer_on_launch_impl(
     app: &tauri::AppHandle,
     config_manager: &Arc<ConfigManager>,
@@ -120,6 +275,11 @@ fn sync_timer_on_launch_impl(
 ) -> Result<(), String> {
     let config = config_manager.get()?;
     if !config.activation.activated {
+        return Ok(());
+    }
+
+    if is_quiet_hours_now(&config) {
+        apply_quiet_hours_force_stop(app, config_manager, app_state, rest_lock_guard, true)?;
         return Ok(());
     }
 
@@ -265,16 +425,23 @@ fn configure_timer_callback(
         update_tray_tooltip(&app_handle_clone, &runtime);
 
         // 休息阶段软强制重锁：用户手动解锁后会被再次锁回，直到休息阶段结束
+        // 用餐/夜间休息时段必须能解锁，绝不再锁回
         if runtime.state == TimerState::Running && runtime.phase == TimerPhase::Rest {
-            let guard_state = app_handle_clone.state::<RestLockGuardState>();
-            if guard_state.enforce_during_rest.load(Ordering::Relaxed) {
-                let now = unix_now_secs();
-                let last = guard_state.last_relock_unix_secs.load(Ordering::Relaxed);
-                if now.saturating_sub(last) >= REST_RELOCK_INTERVAL_SECS {
-                    system::lock_screen();
-                    guard_state
-                        .last_relock_unix_secs
-                        .store(now, Ordering::Relaxed);
+            let in_quiet_hours = config_manager
+                .get()
+                .map(|config| is_quiet_hours_now(&config))
+                .unwrap_or(false);
+            if !in_quiet_hours {
+                let guard_state = app_handle_clone.state::<RestLockGuardState>();
+                if guard_state.enforce_during_rest.load(Ordering::Relaxed) {
+                    let now = unix_now_secs();
+                    let last = guard_state.last_relock_unix_secs.load(Ordering::Relaxed);
+                    if now.saturating_sub(last) >= REST_RELOCK_INTERVAL_SECS {
+                        system::lock_screen();
+                        guard_state
+                            .last_relock_unix_secs
+                            .store(now, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -283,7 +450,10 @@ fn configure_timer_callback(
         if runtime.state == TimerState::Running && runtime.phase == TimerPhase::Work {
             if let Ok(config) = config_manager.get() {
                 let notice_seconds = config.timer.advance_notice_seconds;
-                if notice_seconds > 0 && runtime.remaining_seconds == notice_seconds {
+                if notice_seconds > 0
+                    && runtime.remaining_seconds == notice_seconds
+                    && !is_quiet_hours_now(&config)
+                {
                     let is_effective = schedule::ScheduleChecker::is_effective(
                         config.schedule.time_limit_enabled,
                         &config.schedule.start_time,
@@ -308,6 +478,14 @@ fn configure_timer_callback(
         }
 
         if !is_finished {
+            return;
+        }
+
+        if config_manager
+            .get()
+            .map(|config| is_quiet_hours_now(&config))
+            .unwrap_or(false)
+        {
             return;
         }
 
@@ -399,6 +577,7 @@ fn start_timer(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     activation::ensure_activated(config_manager.inner())?;
+    reject_if_quiet_hours(config_manager.inner())?;
     set_rest_lock_guard(rest_lock_guard.inner(), false);
     let config = config_manager.get()?;
     let app_state = state.lock().map_err(|e| e.to_string())?;
@@ -437,8 +616,11 @@ fn pause_timer(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     activation::ensure_activated(config_manager.inner())?;
+    let config = config_manager.get()?;
     let app_state = state.lock().map_err(|e| e.to_string())?;
-    if rest_lock_guard.enforce_during_rest.load(Ordering::Relaxed) {
+    if rest_lock_guard.enforce_during_rest.load(Ordering::Relaxed)
+        && !is_quiet_hours_now(&config)
+    {
         let runtime = app_state.timer.get_runtime();
         if runtime.phase == TimerPhase::Rest && runtime.state == TimerState::Running {
             return Err("休息阶段禁止暂停".to_string());
@@ -473,6 +655,7 @@ fn resume_timer(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     activation::ensure_activated(config_manager.inner())?;
+    reject_if_quiet_hours(config_manager.inner())?;
     let app_state = state.lock().map_err(|e| e.to_string())?;
 
     configure_timer_callback(&app_state.timer, app_handle.clone(), Arc::clone(config_manager.inner()));
@@ -509,6 +692,7 @@ fn start_loop_rest_timer(
     enforce_lock: bool,
 ) -> Result<(), String> {
     activation::ensure_activated(config_manager.inner())?;
+    reject_if_quiet_hours(config_manager.inner())?;
     if minutes == 0 {
         return Err("循环间隔必须大于0分钟".to_string());
     }
@@ -551,6 +735,7 @@ fn start_work_cycle_timer(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     activation::ensure_activated(config_manager.inner())?;
+    reject_if_quiet_hours(config_manager.inner())?;
     set_rest_lock_guard(rest_lock_guard.inner(), false);
     let _ = config::reset_daily_delay_quota_if_needed(config_manager.inner());
     let config = config_manager.get()?;
@@ -588,7 +773,9 @@ fn stop_timer(
     let _ = config::reset_daily_delay_quota_if_needed(config_manager.inner());
     let config = config_manager.get()?;
     let app_state = state.lock().map_err(|e| e.to_string())?;
-    if rest_lock_guard.enforce_during_rest.load(Ordering::Relaxed) {
+    if rest_lock_guard.enforce_during_rest.load(Ordering::Relaxed)
+        && !is_quiet_hours_now(&config)
+    {
         let runtime = app_state.timer.get_runtime();
         if runtime.phase == TimerPhase::Rest && runtime.state == TimerState::Running {
             return Err("休息阶段禁止停止".to_string());
@@ -645,6 +832,15 @@ fn check_schedule_effective(
         &config.schedule.weekdays,
         &config.schedule.logic,
     ))
+}
+
+#[tauri::command]
+fn check_quiet_hours_active(
+    config_manager: tauri::State<Arc<ConfigManager>>,
+) -> Result<bool, String> {
+    activation::ensure_activated(config_manager.inner())?;
+    let config = config_manager.get()?;
+    Ok(is_quiet_hours_now(&config))
 }
 
 #[tauri::command]
@@ -715,10 +911,12 @@ pub fn run(safe_mode: bool) {
             config::get_config,
             config::update_timer_config,
             config::update_schedule_config,
+            config::update_quiet_hours_config,
             config::update_action_config,
             config::update_startup_config,
             config::update_ui_config,
             check_schedule_effective,
+            check_quiet_hours_active,
             sync_timer_on_launch,
             notifier::delay_execution,
             notifier::confirm_execution,
@@ -891,6 +1089,7 @@ pub fn run(safe_mode: bool) {
 
             let app_handle = app.app_handle().clone();
             apply_startup_behavior(&app_handle);
+            spawn_quiet_hours_watcher(app_handle);
 
             Ok(())
         })

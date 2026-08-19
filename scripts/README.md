@@ -61,7 +61,7 @@
 |----------|--------|------|
 | `npm run build`（在 `timer/`） | `check`、`release-parity` | 前端 TypeScript + Vite 构建 |
 | `dev.sh check` | `check` | `activation-admin` + clippy `-D warnings` |
-| `dev.sh test` | `check` | `cargo test`（20 项单元测试） |
+| `dev.sh test` | `check` | `cargo test` |
 | `cargo check` / `clippy`（无 features） | `release-parity` | 与 `release` 相同的 Cargo feature 集 |
 | `dev.sh release` | Release `build` | 需 GitHub Secrets；含 `icons` + MSI |
 

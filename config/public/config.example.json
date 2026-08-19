@@ -17,6 +17,14 @@
     "weekdays": [1, 2, 3, 4, 5],
     "logic": "AND"
   },
+  "quiet_hours": {
+    "enabled": true,
+    "windows": [
+      { "start": "12:00", "end": "13:00" },
+      { "start": "18:00", "end": "19:00" },
+      { "start": "00:00", "end": "09:00" }
+    ]
+  },
   "action": {
     "action_type": "lock",
     "show_notice": true

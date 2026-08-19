@@ -84,7 +84,9 @@ openssl rand -hex 32
 |------|------|------|
 | `timer` | `interval_minutes` | 倒计时间隔（分钟） |
 | `timer` | `loop_enabled` | 循环执行 |
-| `startup` | `auto_start` | 开机自启（登录后约 20 秒由计划任务拉起，失败时回退注册表） |
+| `schedule` | 时间段/星期 | 生效规则，不在周期内不执行锁屏/关机 |
+| `quiet_hours` | 用餐/夜间休息 | 默认 12:00–13:00、18:00–19:00、00:00–09:00；到点停止倒计时且不锁屏，结束时按工作分钟自动开始 |
+| `startup` | `auto_start` | 开机自启（HKCU Run，路径加引号；启动时按当前 exe 自愈） |
 | `startup` | `start_timer_automatically` | 启动后自动开始计时 |
 | `startup` | `start_minimized` | 启动时最小化到托盘 |
 | `ui` | `theme` | `dark` / `light` / `vivid` |
