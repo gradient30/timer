@@ -180,6 +180,12 @@ fn apply_startup_behavior(app: &tauri::AppHandle) {
         Err(_) => return,
     };
 
+    if config.startup.auto_start {
+        if let Err(err) = startup::sync_os_auto_start(true) {
+            eprintln!("同步开机自启失败: {}", err);
+        }
+    }
+
     if config.startup.start_minimized {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.hide();

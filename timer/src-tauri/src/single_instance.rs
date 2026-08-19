@@ -1,12 +1,25 @@
 //! 单实例模块 - M6: 单实例机制完善
 //! 使用 Windows Mutex 实现进程级别的单实例控制
 
-use std::sync::Mutex;
-
-/// 单实例守卫
+/// 单实例守卫。必须在进程生命周期内持有 Windows Mutex 句柄，
+/// 否则开机自启若触发两次，会当成两个独立实例。
 pub struct SingleInstance {
-    _handle: Mutex<()>,
+    #[cfg(windows)]
+    _handle: Option<windows::Win32::Foundation::HANDLE>,
     is_first: bool,
+}
+
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            if let Some(handle) = self._handle.take() {
+                unsafe {
+                    let _ = windows::Win32::Foundation::CloseHandle(handle);
+                }
+            }
+        }
+    }
 }
 
 impl SingleInstance {
@@ -17,57 +30,29 @@ impl SingleInstance {
     pub fn new() -> Option<Self> {
         #[cfg(windows)]
         {
-            use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-            use windows::Win32::System::Threading::{CreateMutexW, OpenMutexW, MUTEX_ALL_ACCESS};
+            use windows::Win32::Foundation::{
+                CloseHandle, GetLastError, SetLastError, ERROR_ALREADY_EXISTS, ERROR_SUCCESS,
+            };
+            use windows::Win32::System::Threading::CreateMutexW;
 
             unsafe {
-                // 使用 windows::core::w! 宏创建宽字符串
                 let mutex_name = windows::core::w!("TimerApp_SingleInstance_Mutex_v1");
-
-                // 先尝试打开已存在的 Mutex
-                let existing = OpenMutexW(MUTEX_ALL_ACCESS, false, mutex_name);
-
-                if existing.is_ok() {
-                    // Mutex 已存在，说明有另一个实例在运行
+                SetLastError(ERROR_SUCCESS);
+                let handle = CreateMutexW(None, true, mutex_name).ok()?;
+                if GetLastError() == ERROR_ALREADY_EXISTS {
+                    let _ = CloseHandle(handle);
                     return None;
                 }
-
-                // 创建新的 Mutex
-                let handle = CreateMutexW(None, true, mutex_name);
-
-                if handle.is_ok() {
-                    // 检查是否是已存在的 Mutex (可能在我们检查和创建之间另一个实例创建了它)
-                    let error = GetLastError();
-                    if error == ERROR_ALREADY_EXISTS {
-                        return None;
-                    }
-                    Some(Self {
-                        _handle: Mutex::new(()),
-                        is_first: true,
-                    })
-                } else {
-                    // 创建失败，检查错误码
-                    let error = GetLastError();
-                    if error == ERROR_ALREADY_EXISTS {
-                        None
-                    } else {
-                        // 其他错误，但仍然允许启动
-                        Some(Self {
-                            _handle: Mutex::new(()),
-                            is_first: true,
-                        })
-                    }
-                }
+                Some(Self {
+                    _handle: Some(handle),
+                    is_first: true,
+                })
             }
         }
 
         #[cfg(not(windows))]
         {
-            // 非 Windows 平台直接允许
-            Some(Self {
-                _handle: Mutex::new(()),
-                is_first: true,
-            })
+            Some(Self { is_first: true })
         }
     }
 
@@ -108,16 +93,31 @@ pub fn activate_existing_window() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_single_instance() {
-        // 若已有实例运行，则可能创建失败
+        let _guard = TEST_MUTEX.lock().unwrap();
         let instance1 = SingleInstance::new();
         if let Some(instance) = instance1 {
             assert!(instance.is_first());
         }
+    }
 
-        // 第二个实例应该失败（在同一进程中可能仍然成功，取决于实现）
-        // 实际测试需要在不同进程中进行
+    #[test]
+    fn second_instance_in_same_process_is_rejected() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        let first = SingleInstance::new();
+        if first.is_none() {
+            // 本机已有 TimerApp 在运行，跳过以免误伤
+            return;
+        }
+        let second = SingleInstance::new();
+        assert!(
+            second.is_none(),
+            "Windows mutex handle must stay open for the process lifetime"
+        );
     }
 }

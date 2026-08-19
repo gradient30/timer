@@ -1424,7 +1424,8 @@ btnSaveSettings?.addEventListener("click", async () => {
       },
     });
 
-    // 保存启动配置
+    // 先写操作系统启动项，成功后再写入配置，避免配置显示已开启但实际未注册
+    await invoke("set_auto_start", { enabled: autoStart.checked });
     await invoke("update_startup_config", {
       config: {
         auto_start: autoStart.checked,
@@ -1452,9 +1453,6 @@ btnSaveSettings?.addEventListener("click", async () => {
     currentActionType = actionType;
     renderModeDisplay();
     renderActionPreview(currentActionType);
-
-    // 保存开机自启
-    await invoke("set_auto_start", { enabled: autoStart.checked });
 
     await refreshScheduleIndicator();
     if (latestRuntime) {

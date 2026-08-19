@@ -84,7 +84,7 @@ openssl rand -hex 32
 |------|------|------|
 | `timer` | `interval_minutes` | 倒计时间隔（分钟） |
 | `timer` | `loop_enabled` | 循环执行 |
-| `startup` | `auto_start` | 开机自启 |
+| `startup` | `auto_start` | 开机自启（登录后约 20 秒由计划任务拉起，失败时回退注册表） |
 | `startup` | `start_timer_automatically` | 启动后自动开始计时 |
 | `startup` | `start_minimized` | 启动时最小化到托盘 |
 | `ui` | `theme` | `dark` / `light` / `vivid` |
