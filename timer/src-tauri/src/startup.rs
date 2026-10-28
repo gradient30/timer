@@ -26,7 +26,7 @@ pub fn is_auto_start_enabled(
 fn is_auto_start_enabled_internal() -> Result<bool, String> {
     #[cfg(windows)]
     {
-        Ok(is_run_value_present(RUN_SUBKEY, APP_NAME)?)
+        is_run_value_present(RUN_SUBKEY, APP_NAME)
     }
 
     #[cfg(not(windows))]

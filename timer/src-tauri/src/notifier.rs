@@ -120,7 +120,15 @@ impl Notifier {
         };
 
         if matches!(notification.notification_type, NotificationType::Modal) {
-            if let Some(window) = app_handle.get_webview_window("main") {
+            // 用户刚点 X 隐藏窗口时不要抢着唤起（与 CloseRequested 里的 hide 跨线程竞速），
+            // 通知事件仍照常发送
+            let suppressed = app_handle
+                .try_state::<crate::WindowHideGuard>()
+                .map(|g| g.recently_hidden())
+                .unwrap_or(false);
+            if suppressed {
+                tracing::debug!("用户刚隐藏窗口，跳过通知唤起主窗口");
+            } else if let Some(window) = app_handle.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();

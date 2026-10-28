@@ -54,6 +54,34 @@ fn unix_now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 用户主动隐藏窗口（点 X 收回托盘）后短暂抑制后台线程唤起窗口，
+/// 避免通知线程的 show 与 CloseRequested 里的 hide 跨线程竞速把窗口"弹回来"
+const USER_HIDE_SUPPRESS_MS: u64 = 800;
+
+#[derive(Default)]
+pub struct WindowHideGuard {
+    last_user_hide_unix_ms: AtomicU64,
+}
+
+impl WindowHideGuard {
+    fn record_user_hide(&self) {
+        self.last_user_hide_unix_ms
+            .store(unix_now_ms(), Ordering::Relaxed);
+    }
+
+    fn recently_hidden(&self) -> bool {
+        let last = self.last_user_hide_unix_ms.load(Ordering::Relaxed);
+        last != 0 && unix_now_ms().saturating_sub(last) < USER_HIDE_SUPPRESS_MS
+    }
+}
+
 fn set_rest_lock_guard(rest_lock_guard: &RestLockGuardState, enforce: bool) {
     rest_lock_guard
         .enforce_during_rest
@@ -848,6 +876,15 @@ fn set_window_topmost(app_handle: tauri::AppHandle, enabled: bool) -> Result<(),
     if let Some(window) = app_handle.get_webview_window("main") {
         window.set_always_on_top(enabled).map_err(|e| e.to_string())?;
         if enabled {
+            // 用户刚点 X 隐藏窗口时不要抢着唤起（与 CloseRequested 的 hide 竞速）
+            let suppressed = app_handle
+                .try_state::<WindowHideGuard>()
+                .map(|g| g.recently_hidden())
+                .unwrap_or(false);
+            if suppressed {
+                tracing::debug!("用户刚隐藏窗口，跳过通知置顶唤起");
+                return Ok(());
+            }
             let _ = window.unminimize();
             let _ = window.show();
             let _ = window.set_focus();
@@ -895,6 +932,7 @@ pub fn run(safe_mode: bool) {
         .manage(Arc::clone(&config_manager))
         .manage(runtime_flags)
         .manage(RestLockGuardState::default())
+        .manage(WindowHideGuard::default())
         .invoke_handler(tauri::generate_handler![
             get_timer_runtime,
             get_timer_engine_config,
@@ -1064,15 +1102,30 @@ pub fn run(safe_mode: bool) {
                 match event {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        if let (Some(cm), Some(st)) = (
-                            app_handle_for_close.try_state::<Arc<ConfigManager>>(),
-                            app_handle_for_close.try_state::<Mutex<AppState>>(),
-                        ) {
-                            if let Ok(state) = st.lock() {
-                                let _ = persist_timer_runtime(cm.inner(), &state.timer);
-                            }
+                        // 记录用户主动隐藏时刻，抑制后台通知线程在竞速窗口内唤起窗口
+                        if let Some(guard) = app_handle_for_close.try_state::<WindowHideGuard>() {
+                            guard.record_user_hide();
                         }
+                        // 先隐藏窗口，给用户即时反馈
                         let _ = window_clone.hide();
+
+                        // 持久化放到后台线程：主线程上等锁 + 同步写盘会让窗口冻结，
+                        // 表现为点 X 后长时间无响应
+                        let persist_handle = app_handle_for_close.clone();
+                        thread::spawn(move || {
+                            if let (Some(cm), Some(st)) = (
+                                persist_handle.try_state::<Arc<ConfigManager>>(),
+                                persist_handle.try_state::<Mutex<AppState>>(),
+                            ) {
+                                if let Ok(state) = st.lock() {
+                                    if let Err(err) =
+                                        persist_timer_runtime(cm.inner(), &state.timer)
+                                    {
+                                        eprintln!("隐藏窗口时持久化计时器状态失败: {}", err);
+                                    }
+                                }
+                            }
+                        });
                     }
                     WindowEvent::Focused(true) => {
                         if let Some(st) = app_handle_for_close.try_state::<Mutex<AppState>>() {
@@ -1095,4 +1148,23 @@ pub fn run(safe_mode: bool) {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_hide_guard_initially_not_recent() {
+        let guard = WindowHideGuard::default();
+        assert!(!guard.recently_hidden());
+    }
+
+    #[test]
+    fn window_hide_guard_recent_after_record() {
+        let guard = WindowHideGuard::default();
+        guard.record_user_hide();
+        // 记录后立即检查，必然处于抑制窗口内
+        assert!(guard.recently_hidden());
+    }
 }
