@@ -2,7 +2,7 @@
 
 本文件记录 TimerApp 各版本的对外可见变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
-## [0.1.4] - 未发布
+## [0.1.4] - 2026-10-28
 
 ### 修复
 
